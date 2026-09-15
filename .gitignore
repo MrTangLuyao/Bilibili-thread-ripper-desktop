@@ -1,0 +1,6 @@
+test-output/
+*.log
+node_modules/
+BTR_Desktop.exe
+release/
+release-stage-*/

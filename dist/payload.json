@@ -1,0 +1,18 @@
+{
+  "version": "0.9.1.1-d1",
+  "adapterRevision": 1,
+  "sha256": "6d31cfc093f7ed9f9780f3a45a69c49f36084bd573bd13773fb27587df363e44",
+  "files": {
+    "shared/range-core.js": "2d734b03b40ac17fa34ca3c677eb4f6669146e3411d276153f05140ef0d538a2",
+    "shared/cdn-resolver.js": "6a987b942f9ad1d15af502650c5993ee67c8114cda42758eff58a2ffe1ab0088",
+    "shared/idm-downloader.js": "530afaa708dd3a2f61c0d008c315489408a4348cc5b29f586a2befbfd4f26849",
+    "shared/runtime-notices.js": "d44f186655aaa364f1e9f7b99bbd19a48fb3a7b7015e665bc31abc73dc938d55",
+    "shared/notification-view.js": "39bb1d1d3ae35449c32388e15765fbac7524a1fc85368c042473f0e2c8b4dbb4",
+    "src/settings.js": "a076e0df38d5f7dc3f86e018facccf3d4d6644bcb3b9fb20f8520bc02dc0da8b",
+    "src/transport.js": "915530ddd96a8ba38f741ed3839cd363d0170a3061244a1b5b419ca69d0d5fb0",
+    "src/client.js": "d385d62a85dcb2c62c368095c3ce22ed11a2ac3c1e36b4e1cf9fea68e8c93a41",
+    "src/updates.js": "964fb1deb88547a9b8fb626fb345fefbca4a5c764eaabdd5cb619428814fb074",
+    "src/settings-view.js": "00a8e0e9dd7ccdbd83645930b8ec64fe1a809301edf88e56881d6a0b4b2070b9",
+    "src/player-settings.js": "8594a20b004a576397bbe66d86e18b1f5ab28177e6a74c85db14701660cfcd71"
+  }
+}

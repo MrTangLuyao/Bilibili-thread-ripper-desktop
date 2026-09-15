@@ -1,0 +1,115 @@
+"use strict";
+let fs;
+try { fs = require("original-fs"); } catch (_) { fs = require("node:fs"); }
+const path = require("node:path");
+const { Asar, sha } = require("./asar.cjs");
+const project = path.resolve(__dirname, "..");
+const config = JSON.parse(fs.readFileSync(path.join(project, "desktop.json")));
+const BUNDLE_FILE = "btr-desktop/desktop.js";
+const BOOTSTRAP_PREFIX = 'require("./btr-desktop/bootstrap.cjs");\n';
+function hooks(bundle) {
+  const bootstrap = fs.readFileSync(path.join(project, "src", "bootstrap.cjs"));
+  const preload = Buffer.from(`"use strict";\n(() => {\n` +
+    `if (!process.isMainFrame || location.origin !== "https://bilipc.bilibili.com" || !/^\\/(index|player)\\.html$/.test(location.pathname)) return;\n` +
+    `const {ipcRenderer}=require("electron"),channel="__BTR_DESKTOP_UPDATE__";\n` +
+    `let checking=false; const send=result=>window.postMessage({channel,type:"result",result},location.origin);\n` +
+    `window.addEventListener("message",async event=>{if(event.source!==window||event.data?.channel!==channel||event.data.type!=="check"||checking)return;checking=true;try{send(await ipcRenderer.invoke("btr-desktop:update-check"));}catch(_){send({state:"error",message:"更新检查失败，请稍后重试"});}finally{checking=false;}});\n` +
+    `document.addEventListener("click",async event=>{if(!event.isTrusted||!event.target.closest?.("#btr-desktop-install-update")||!event.target.closest?.("#btr-desktop-settings"))return;try{send(await ipcRenderer.invoke("btr-desktop:update-install"));}catch(_){send({state:"error",message:"无法启动更新，请重新运行安装命令"});}},true);\n` +
+    `const code = ${JSON.stringify(bundle.toString("utf8"))};\n` +
+    `let injected = false;\nfunction inject() { if (injected || !document.documentElement) return; injected = true; observer.disconnect(); const script = document.createElement("script"); script.textContent = code; (document.head || document.documentElement).appendChild(script); script.remove(); }\n` +
+    `const observer = new MutationObserver(inject); observer.observe(document, {childList:true,subtree:true}); inject();\n})();\n`);
+  return { bootstrap, preload,
+    "update-main":fs.readFileSync(path.join(project,"src","update-main.cjs")),
+    "update-provider":fs.readFileSync(path.join(project,"tools","update-provider.cjs")),
+    "https-json":fs.readFileSync(path.join(project,"tools","https-json.cjs")),
+    "update-config":Buffer.from(JSON.stringify({...config,installerSha256:sha(fs.readFileSync(path.join(project,"install.ps1")))}))
+  };
+}
+const hookFile = key => `btr-desktop/${key}.${key === "update-config" ? "json" : "cjs"}`;
+function sameHooks(archive, expected) {return Object.entries(expected).every(([key,value]) => archive.entry(hookFile(key)) && sha(archive.read(hookFile(key))) === sha(value));}
+function inspect(archive) {
+  const app = JSON.parse(archive.text("package.json"));
+  if (app.name !== "bilibili") throw Error("目标不是官方 Bilibili 客户端");
+  let installed = null;
+  if (archive.entry("btr-desktop/installed.json")) installed = JSON.parse(archive.text("btr-desktop/installed.json"));
+  return { clientVersion: app.version, installed };
+}
+function patch(original, bundle, metadata) {
+  const info = inspect(original);
+  if (!config.supportedClientVersions.includes(info.clientVersion)) throw Error(`暂未适配客户端 ${info.clientVersion}，没有修改官方文件`);
+  if (info.installed) throw Error("只能在已验证的原始备份上制作补丁");
+  if (!original.entry("index.js") || !original.entry("render/player.html")) throw Error("客户端入口结构不匹配");
+  const entry = original.text("index.js");
+  if (entry.includes(BOOTSTRAP_PREFIX)) throw Error("客户端已经包含 BTR 入口");
+  original.set("index.js", BOOTSTRAP_PREFIX + entry);
+  for (const [key,value] of Object.entries(hooks(bundle))) original.set(hookFile(key),value);
+  original.set(BUNDLE_FILE, bundle);
+  original.set("btr-desktop/installed.json", JSON.stringify(metadata));
+  return original.pack();
+}
+function run(action, clientPath) {
+  if (!clientPath || !path.isAbsolute(clientPath)) throw Error("需要客户端绝对路径");
+  const client = fs.realpathSync(clientPath);
+  const target = fs.statSync(client).isDirectory() ? path.join(client, "resources", "app.asar") : client;
+  if (path.extname(target) !== ".asar") throw Error("目标必须是客户端 ASAR 资源");
+  if (fs.lstatSync(target).isSymbolicLink()) throw Error("不处理链接形式的客户端资源");
+  const bytes = fs.readFileSync(target), hash = sha(bytes), archive = new Asar(bytes), info = inspect(archive);
+  if (action === "status") {
+    const bundle = fs.readFileSync(path.join(project, "dist", "desktop.js")), expected = hooks(bundle);
+    const current = !!info.installed && info.installed.payloadSha256 === sha(bundle) && archive.entry(BUNDLE_FILE) && sha(archive.read(BUNDLE_FILE)) === sha(bundle) && archive.text("index.js").startsWith(BOOTSTRAP_PREFIX) && sameHooks(archive, expected) && info.installed.installRoot === project;
+    return { ...info, path: client, sha256: hash, current: !!current, supported: config.supportedClientVersions.includes(info.clientVersion) };
+  }
+  const statePath = path.join(path.dirname(target), "btr-desktop-backups");
+  const stateFile = path.join(statePath, path.basename(target) === "app.asar" ? "deployment.json" : `${path.basename(target)}.deployment.json`);
+  const deployment = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile)) : null;
+  if (action === "remove") {
+    if (!info.installed) return { state: "not-installed" };
+    if (!deployment || deployment.patchedSha256 !== hash || deployment.clientVersion !== info.clientVersion) throw Error("当前客户端与安装记录不匹配，拒绝覆盖。请重新安装官方客户端。");
+    const backup = path.join(statePath, `${deployment.originalSha256}.asar`);
+    const original = fs.readFileSync(backup);
+    if (sha(original) !== deployment.originalSha256) throw Error("备份校验失败");
+    replace(target, original);
+    return { state: "removed", clientVersion: info.clientVersion, message: "已恢复官方资源，备份和用户设置保留" };
+  }
+  if (!["install", "repair"].includes(action)) throw Error("未知操作");
+  if (!config.supportedClientVersions.includes(info.clientVersion)) return { state: "unsupported-client", clientVersion: info.clientVersion, message: "客户端已更新到尚未适配的版本，保持官方程序不变" };
+  const bundle = fs.readFileSync(path.join(project, "dist", "desktop.js"));
+  const payload = JSON.parse(fs.readFileSync(path.join(project, "dist", "payload.json")));
+  if (sha(bundle) !== payload.sha256) throw Error("BTR 文件校验失败");
+  const expected = hooks(bundle);
+  if (info.installed?.payloadSha256 === payload.sha256 && archive.entry(BUNDLE_FILE) && sha(archive.read(BUNDLE_FILE)) === payload.sha256 && archive.text("index.js").startsWith(BOOTSTRAP_PREFIX) && sameHooks(archive, expected) && info.installed.installRoot === project) return { state: "current", clientVersion: info.clientVersion };
+  let originalBytes = bytes;
+  if (info.installed) {
+    const backupHash = info.installed.originalSha256;
+    if (!/^[a-f0-9]{64}$/.test(backupHash)) throw Error("Invalid original backup hash");
+    originalBytes = fs.readFileSync(path.join(statePath, `${backupHash}.asar`));
+    if (sha(originalBytes) !== backupHash || inspect(new Asar(originalBytes)).clientVersion !== info.clientVersion) throw Error("原始备份不匹配");
+  }
+  const originalHash = sha(originalBytes);
+  const metadata = { schema: 1, version: config.version, adapterRevision: config.adapterRevision, clientVersion: info.clientVersion, originalSha256: originalHash, payloadSha256: payload.sha256, installRoot:project };
+  const patched = patch(new Asar(originalBytes), bundle, metadata);
+  const verify = new Asar(patched);
+  if (sha(verify.read(BUNDLE_FILE)) !== payload.sha256) throw Error("补丁自检失败");
+  fs.mkdirSync(statePath, { recursive: true });
+  const backupPath = path.join(statePath, `${originalHash}.asar`);
+  if (!fs.existsSync(backupPath)) fs.writeFileSync(backupPath, originalBytes, { flag: "wx" });
+  if (sha(fs.readFileSync(backupPath)) !== originalHash) throw Error("备份内容校验失败");
+  replace(target, patched);
+  fs.writeFileSync(stateFile, JSON.stringify({ ...metadata, patchedSha256: sha(patched) }, null, 2));
+  return { state: "installed", clientVersion: info.clientVersion, version: config.version, backupPath };
+}
+function replace(target, bytes) {
+  const temporary = `${target}.btr-${process.pid}.tmp`;
+  fs.writeFileSync(temporary, bytes, { flag: "wx" });
+  try {
+    if (sha(fs.readFileSync(temporary)) !== sha(bytes)) throw Error("写入校验失败");
+    fs.renameSync(temporary, target);
+  } catch (error) { try { fs.unlinkSync(temporary); } catch (_) {} throw error; }
+}
+if (require.main === module) {
+  const report = value => { if (process.argv[4]) fs.writeFileSync(process.argv[4], JSON.stringify(value, null, 2)); };
+  Promise.resolve().then(() => process.argv[2] === "check-update" ? require("./update-provider.cjs").check(config.update, config) : run(process.argv[2] || "status", process.argv[3]))
+    .then(result => { report(result); console.log(JSON.stringify(result, null, 2)); })
+    .catch(error => { report({ state: "error", message: error.message }); console.error(error.message); process.exitCode = 1; });
+}
+module.exports = { inspect, patch, run };
