@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.2-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -108,9 +108,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
       mode,
       compatibilityMode,
       debugNotices: source.debugNotices === true,
-      errorNotices: source.errorNotices !== false,
+      errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
-      concurrency: allowed.includes(requested) ? requested : 32,
+      concurrency: allowed.includes(requested) ? requested : 8,
       volume: Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 0.7,
       subtitleLanguage: /^[\w-]+$/i.test(String(source.subtitleLanguage || "off"))
         ? String(source.subtitleLanguage).slice(0, 48)
@@ -214,14 +214,58 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
     return [...allowedOriginals, ...synthetic].filter((value, index, all) => all.indexOf(value) === index);
   }
 
-  function createResolver(representation, getMode) {
+  function hostOf(value) {
+    try { return new URL(value).hostname.toLowerCase(); }
+    catch (_error) { return ""; }
+  }
+
+  // A CDN node that twice fails without sending a single byte is skipped for the
+  // rest of the current video. The owner resets the list when the video changes.
+  function createBanList(options = {}) {
+    const limit = Math.max(1, Math.trunc(Number(options.limit)) || 2);
+    const strikes = new Map();
+    const banned = new Set();
+    return Object.freeze({
+      record(url, receivedBytes, error) {
+        if (error?.name === "AbortError" || Number(receivedBytes) > 0) return false;
+        const host = hostOf(url);
+        if (!host || banned.has(host)) return false;
+        const count = (strikes.get(host) || 0) + 1;
+        strikes.set(host, count);
+        if (count < limit) return false;
+        banned.add(host);
+        try { options.onBan?.(host, count, error); } catch (_error) {}
+        return true;
+      },
+      allows: (url) => !banned.has(hostOf(url)),
+      hosts: () => [...banned],
+      reset() {
+        strikes.clear();
+        banned.clear();
+      }
+    });
+  }
+
+  function createResolver(representation, getMode, bans = null) {
     const health = new Map();
     let cursor = 0;
     let mediaRangeCount = 0;
     let rangeCursor = 0;
 
-    function urls() {
+    function allUrls() {
       return representationUrls(representation, getMode?.() === "overseas" ? "overseas" : "mainland");
+    }
+
+    // Banned nodes are left out. If every node is banned, keep using them rather
+    // than leaving the video with no download address at all.
+    function unbanned(list) {
+      if (!bans) return list;
+      const allowed = list.filter(bans.allows);
+      return allowed.length ? allowed : list;
+    }
+
+    function urls() {
+      return unbanned(allUrls());
     }
 
     function ordered(pieceIndex = 0, exclude = new Set()) {
@@ -271,8 +315,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
       const originals = [primary, ...(Array.isArray(backup) ? backup : [])]
         .map(safeMediaUrl)
         .filter(Boolean);
-      const candidates = [...originals, ...urls()]
-        .filter((url, index, all) => all.indexOf(url) === index)
+      const candidates = unbanned([...originals, ...allUrls()]
+        .filter((url, index, all) => all.indexOf(url) === index))
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now);
       return candidates.slice(0, 8);
     }
@@ -299,8 +343,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
       });
     }
 
-    function failure(url, error) {
+    function failure(url, error, receivedBytes = 0) {
       if (error?.name === "AbortError") return;
+      bans?.record(url, receivedBytes, error);
       const old = health.get(url) || {};
       const failures = (old.failures || 0) + 1;
       health.set(url, {
@@ -312,23 +357,25 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
 
     function status() {
       const now = Date.now();
-      return urls().map((url) => {
+      return allUrls().map((url) => {
         const item = health.get(url) || {};
         return {
           host: new URL(url).hostname,
-          state: (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
+          state: bans && !bans.allows(url) ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
           bps: item.bps || 0
         };
       });
     }
 
-    return Object.freeze({ failure, ordered, rangeCandidates, rescueCandidates, startupCandidates, status, success, urls });
+    const allows = (url) => !bans || bans.allows(url);
+    return Object.freeze({ allows, failure, ordered, rangeCandidates, rescueCandidates, startupCandidates, status, success, urls });
   }
 
   root.__BILI_CDN_RESOLVER_FACTORY__ = Object.freeze({
     GLOBAL_HOSTS,
     MAINLAND_HOSTS,
     OVERSEAS_HOSTS,
+    createBanList,
     createResolver,
     isAkamaiUrl,
     representationUrls,
@@ -403,9 +450,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
     const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
     const semaphore = new Semaphore(core.normalizeSettings(getSettings()).concurrency);
 
-    async function readBody(response, controller, transferId, settings) {
+    async function readBody(response, controller, transferId, settings, received) {
       if (!response.body?.getReader) {
         const bytes = new Uint8Array(await response.arrayBuffer());
+        received.bytes += bytes.byteLength;
         onTransfer({ phase: "progress", id: transferId, bytes: bytes.byteLength });
         return bytes;
       }
@@ -426,6 +474,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
           const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
           chunks.push(chunk);
           total += chunk.byteLength;
+          received.bytes += chunk.byteLength;
           onTransfer({ phase: "progress", id: transferId, bytes: chunk.byteLength });
         }
       } finally {
@@ -452,6 +501,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
       const totalTimer = setTimeout(() => controller.abort(new DOMException("CDN 子块总耗时超限", "TimeoutError")), settings.attemptTimeoutMs);
       const transferId = onTransfer({ phase: "start", kind, totalBytes: piece.length, url });
       const startedAt = performance.now();
+      const received = { bytes: 0 };
       try {
         const response = await nativeFetch(url, {
           method: "GET",
@@ -468,14 +518,15 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
         if (response.status !== 206 || !contentRange || contentRange.start !== piece.start || contentRange.end !== piece.end) {
           throw new Error(`Range 校验失败：HTTP ${response.status}`);
         }
-        const bytes = await readBody(response, controller, transferId, settings);
+        const bytes = await readBody(response, controller, transferId, settings, received);
         if (bytes.byteLength !== piece.length) throw new Error(`子块长度不符：${bytes.byteLength}/${piece.length}`);
         const seconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
         resolver.success(url, bytes.byteLength / seconds);
         onTransfer({ phase: "done", id: transferId });
         return { bytes, total: contentRange.total, url };
       } catch (error) {
-        resolver.failure(url, error);
+        // Received bytes tell a dead node (0 KiB) apart from a transfer that stalled midway.
+        resolver.failure(url, error, received.bytes);
         const canceled = error?.name === "AbortError";
         onTransfer({ phase: canceled ? "cancel" : "error", id: transferId, error });
         throw error;
@@ -504,14 +555,21 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
       }
       const settings = core.normalizeSettings(getSettings());
       const limit = Math.min(8, candidates.length);
+      const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
+      const tried = new Set();
       let lastError = null;
 
       const startup = startupMode === true || startupMode === "probe";
       const probe = startupMode === "probe";
       const batchWidth = probe ? limit : 2;
-      for (let offset = 0; offset < limit; offset += batchWidth) {
+      while (tried.size < limit) {
         if (signal?.aborted) throw abortError(signal.reason);
-        const pair = candidates.slice(offset, offset + batchWidth);
+        // A node banned while this piece was waiting is skipped, unless only banned nodes are left.
+        const untried = candidates.filter((url) => !tried.has(url));
+        const open = untried.filter(allowed);
+        const pair = (open.length ? open : untried).slice(0, batchWidth);
+        if (!pair.length) break;
+        pair.forEach((url) => tried.add(url));
         const controllers = pair.map(() => new AbortController());
         const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
         if (signal?.aborted) cancelAll();
@@ -897,10 +955,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
   root.__BTR_RUNTIME_NOTICES__ = Object.freeze({
     log,
     configure(next) {
-      const changed = settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices || settings.errorNotices !== (next.errorNotices !== false)
+      const changed = settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices || settings.errorNotices !== (next.errorNotices === true)
         || ["playback", "buffer"].some(category => (settings.debugCategories?.[category] !== false) !== (next.debugCategories?.[category] !== false));
       const wasDebug = settings.enabled && settings.debugNotices;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices !== false, debugCategories: { ...next.debugCategories } };
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
       for (const [key, entry] of pending) if (!allowed(entry.level, entry.category)) pending.delete(key);
       if (!pending.size) {
         clearTimeout(flushTimer);
@@ -1194,7 +1252,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
   root.__BTR_NOTIFICATION_VIEW__ = Object.freeze({
     configure(next) {
       if (settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices) playback = null;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices !== false, debugCategories: { ...next.debugCategories } };
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
       if (!settings.debugNotices) lastMode = "";
       for (const card of cards) {
         const debugAllowed = settings.debugNotices && settings.debugCategories[card.category] !== false;
@@ -1238,17 +1296,24 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
   const KEY = "BTR_Desktop.settings.v1";
   const categories = { takeover: "接管与切换", playback: "播放与暂停", download: "下载线程", buffer: "缓冲与跳转", settings: "设置变化", other: "其他日志" };
   const listeners = new Set();
+  // 0.9.1.2 moves everyone once to mainland CDN, 8 threads and hidden error notices.
+  const REVISION = 2, UPGRADE = { mode: "mainland", concurrency: 8, errorNotices: false };
   const normalize = value => {
     const s = root.__BILI_RANGE_CORE__.normalizeSettings(value || {});
-    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false };
+    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
   };
   let current;
-  try { current = normalize(JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (_) { current = normalize({}); }
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) || "null");
+    const outdated = !!saved && saved.revision !== REVISION;
+    current = normalize(outdated ? { ...saved, ...UPGRADE } : saved);
+    if (outdated) localStorage.setItem(KEY, JSON.stringify(current));
+  } catch (_) { current = normalize({}); }
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d5",
-    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 5,
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.2-d1",
+    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, debugCategories: { ...current.debugCategories } }),
     setSettings(patch) {
@@ -1277,6 +1342,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
   const core = root.__BILI_RANGE_CORE__, resolverFactory = root.__BILI_CDN_RESOLVER_FACTORY__;
   const nativeFetch = root.fetch.bind(root), NativeXHR = root.XMLHttpRequest;
   const pending = new Set(), operations = new Set(), resolvers = new Map(), representations = new Map(), active = new Map(), totals = new Map();
+  const KIND_LABELS = { video: "画面", audio: "声音", meta: "视频信息" };
+  const hostOf = value => { try { return new URL(value).hostname; } catch (_) { return ""; } };
   let generation = 0, route = "", transferSequence = 0, latestTransfer = 0, failureStreak = 0;
   // BTR loads on every client version. If a future player stops matching what this adapter
   // expects, stop accelerating in this window instead of adding a failed attempt to every request.
@@ -1301,21 +1368,29 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
   }
   function onTransfer(event) {
     if (event.phase === "start") {
-      const id = ++transferSequence; latestTransfer = id; active.set(id, { ...event, received: 0 }); stats.activeThreads = active.size;
+      const id = ++transferSequence; latestTransfer = id; active.set(id, { ...event, id, received: 0, bytes: 0 }); stats.activeThreads = active.size;
       stats.maxThreads = Math.max(stats.maxThreads, active.size); return id;
     }
     if (event.phase === "progress") {
       stats.networkBytes += Number(event.bytes) || 0;
       const transfer = active.get(event.id);
+      if (transfer) transfer.bytes += Number(event.bytes) || 0;
       if (transfer?.range) {
         transfer.received += Number(event.bytes) || 0;
         for (const operation of transfer.operations) wireProgress(operation, transfer.range.start, Math.min(transfer.range.end, transfer.range.start + transfer.received - 1));
       }
     }
+    const ended = active.get(event.id);
+    // Same wording as the browser version, so a node that sent 0 KiB is easy to recognise.
+    if (event.phase === "error" && ended) log("这一小段没能下载下来", `第 ${ended.id} 条线程已收到 ${Math.round(ended.bytes / 1024)} KiB ${KIND_LABELS[ended.kind] || "视频"}数据。\n下载节点：${hostOf(ended.url)}\n原因：${event.error?.message || event.error || "未知"}`, "error", "download", `range-error-${ended.kind}`);
     if (["done", "error", "cancel"].includes(event.phase)) active.delete(event.id);
     stats.activeThreads = active.size;
   }
-  // This is the unmodified 0.9.1.1 downloader. The adapter changes only its host environment.
+  // A node that twice sends nothing is skipped until the video changes.
+  const bans = resolverFactory.createBanList({
+    onBan: host => log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
+  });
+  // This is the shared browser downloader. The adapter changes only its host environment.
   const downloader = root.__BILI_IDM_DOWNLOADER_FACTORY__.createDownloader({
     getSettings: api.getSettings, onTransfer,
     nativeFetch: (url, init) => {
@@ -1356,7 +1431,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
     if (!resolvers.has(key)) {
       const rep = representations.get(mediaKey(url));
       const exact = rep && [rep.baseUrl, rep.base_url, ...(rep.backupUrl || rep.backup_url || [])].includes(url);
-      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode);
+      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans);
       // Some client responses contain only a signed Akamai URL. Preserve it;
       // never invent a mainland hostname for an Akamai-specific signature.
       resolvers.set(key, Object.freeze({ ...resolver,
@@ -1500,10 +1575,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d5","adapterRevision":5};
       if (next === route) return;
       generation++; route = String(next || ""); stats.route = route; stats.routeAcceleratedRequests = 0;
       for (const controller of pending) controller.abort(new DOMException("视频已切换", "AbortError"));
-      resolvers.clear(); representations.clear(); totals.clear();
+      resolvers.clear(); representations.clear(); totals.clear(); bans.reset();
       log("已切换视频", "旧视频的下载任务已取消。", "info", "takeover");
     },
-    snapshot: () => ({ ...stats, generation, pending: pending.size }),
+    snapshot: () => ({ ...stats, generation, pending: pending.size, bannedHosts: bans.hosts() }),
     restore() {
       for (const controller of pending) controller.abort(new DOMException("加速已停止", "AbortError"));
       root.fetch = nativeFetch; root.XMLHttpRequest = NativeXHR;

@@ -11,11 +11,16 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
   try {
     const context = await browser.newContext(), page = await context.newPage(); const errors = [];
     page.on("pageerror", error => { errors.push(error.message); console.error("PAGE ERROR", error.message); });
-    let requestCount = 0, failure = false;
+    let requestCount = 0, failure = false, deadHost = "";
+    const hostHits = new Map();
     await context.route(/https:\/\/.*\.bilivideo\.com\//, async route => {
       requestCount++;
+      const host = new URL(route.request().url()).hostname;
+      hostHits.set(host, (hostHits.get(host) || 0) + 1);
       const match = /bytes=(\d+)-(\d+)/.exec(route.request().headers().range || "");
       if (!match) return route.fulfill({ status: 200, body: "native" });
+      // A dead node answers without sending a single media byte.
+      if (host === deadHost) return route.fulfill({ status: 503, headers: { "Access-Control-Allow-Origin": "*" }, body: "" });
       if (failure && !route.request().headers()["x-btr-native-fallback"]) return route.fulfill({ status: 503, body: "failed" });
       const start = Number(match[1]), end = Number(match[2]), bytes = Buffer.alloc(end - start + 1);
       for (let i = 0; i < bytes.length; i++) bytes[i] = (start + i) % 251;
@@ -23,6 +28,10 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       await route.fulfill({ status: 206, headers: { "Content-Range": `bytes ${start}-${end}/8388608`, "Content-Length": String(bytes.length), "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Content-Range,Content-Length", "Content-Type": "video/mp4" }, body: bytes });
     });
     await page.goto(origin); await page.locator("#btr-desktop-settings").waitFor();
+    const fresh = await page.evaluate(() => __BTR_DESKTOP__.getSettings());
+    assert.deepEqual([fresh.mode, fresh.concurrency, fresh.errorNotices, fresh.debugNotices], ["mainland", 8, false, false]);
+    assert.equal(await page.locator("#btr-desktop-settings output").textContent(), "8");
+    assert.equal(await page.locator('[data-mode="mainland"]').getAttribute("aria-pressed"), "true");
     assert.equal(await page.locator('[data-setting=autoCheckUpdates]').isChecked(),true);
     assert.equal(await page.evaluate(()=>__BTR_DESKTOP__.getUpdate().state),"idle");
     await page.locator('[data-setting=autoCheckUpdates]').uncheck();
@@ -38,7 +47,7 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       return {after:b.left>a.right,sameRow:Math.abs(a.top-b.top)<1,color:getComputedStyle(remove).backgroundColor};
     });
     assert.deepEqual(buttons,{after:true,sameRow:true,color:"rgb(185, 56, 67)"});
-    assert.equal(await page.locator("[data-setting=errorNotices]").isChecked(), true);
+    assert.equal(await page.locator("[data-setting=errorNotices]").isChecked(), false);
     await page.locator("[data-setting=debugNotices]").check();
     assert.equal(await page.locator("[data-category]:checked").count(), 6);
     await page.locator("[data-category=download]").uncheck();
@@ -123,6 +132,30 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       return promise;
     }); assert.equal(abort, "AbortError");
     console.log("PASS rapid video switch cancels old requests without stale delivery");
+    // Two empty replies ban a node for this video; the next video starts clean.
+    // Good nodes answer a little later, so the dead reply is not cancelled by a faster copy.
+    deadHost = "upos-sz-mirrorhw.bilivideo.com";
+    const banned = await page.evaluate(async () => {
+      __BTR_DESKTOP__.transport.switchRoute("video-ban:1");
+      for (let i = 0; i < 10 && !__BTR_DESKTOP__.transport.snapshot().bannedHosts.length; i++) {
+        const response = await fetch(`https://upos-sz-mirrorali.bilivideo.com/upgcxcode/slow-ban-${i}.m4s`, { headers: { Range: "bytes=0-1048575" } });
+        if ((await response.arrayBuffer()).byteLength !== 1048576) throw Error("wrong length");
+      }
+      return __BTR_DESKTOP__.transport.snapshot().bannedHosts;
+    });
+    assert.deepEqual(banned, [deadHost]);
+    await page.waitForTimeout(300);
+    const deadBefore = hostHits.get(deadHost);
+    const afterBan = await page.evaluate(async () => {
+      let bytes = 0;
+      for (let i = 0; i < 3; i++) bytes += (await (await fetch(`https://upos-sz-mirrorali.bilivideo.com/upgcxcode/slow-after-ban-${i}.m4s`, { headers: { Range: "bytes=0-1048575" } })).arrayBuffer()).byteLength;
+      return { bytes, fallbacks: __BTR_DESKTOP__.transport.snapshot().fallbackRequests };
+    });
+    assert.equal(afterBan.bytes, 3 * 1048576); assert.equal(afterBan.fallbacks, 0);
+    assert.equal(hostHits.get(deadHost), deadBefore, "a banned node must not be asked again in the same video");
+    assert.deepEqual(await page.evaluate(() => { __BTR_DESKTOP__.transport.switchRoute("video-ban:2"); return __BTR_DESKTOP__.transport.snapshot().bannedHosts; }), []);
+    deadHost = "";
+    console.log("PASS a node with two 0 KiB replies is banned for the current video, skipped afterwards and restored on the next video");
     failure = true;
     const fallback = await page.evaluate(async () => {
       const response = await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/fallback.m4s", { headers: { Range: "bytes=0-4095", "X-Btr-Native-Fallback": "yes" } });
@@ -143,5 +176,23 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     console.log("PASS six failures in a row pause acceleration for the window; later requests go straight to the client");
     assert.deepEqual(errors, []);
     console.log("PASS no browser script errors; CDN requests", requestCount);
+    // Settings saved by 0.9.1.1 move once to the new defaults; other choices are kept.
+    const legacy = await browser.newContext();
+    await legacy.addInitScript(() => {
+      if (sessionStorage.getItem("btr-seeded")) return;
+      sessionStorage.setItem("btr-seeded", "1");
+      localStorage.setItem("BTR_Desktop.settings.v1", JSON.stringify({ enabled: true, concurrency: 32, mode: "overseas", debugNotices: true, errorNotices: true, debugCategories: { download: false }, autoCheckUpdates: false }));
+    });
+    const old = await legacy.newPage(); old.on("pageerror", error => errors.push(error.message));
+    await old.goto(origin);
+    const migrated = await old.evaluate(() => ({ settings: __BTR_DESKTOP__.getSettings(), stored: JSON.parse(localStorage.getItem("BTR_Desktop.settings.v1")) }));
+    assert.deepEqual([migrated.settings.mode, migrated.settings.concurrency, migrated.settings.errorNotices, migrated.settings.debugNotices, migrated.settings.debugCategories.download, migrated.settings.autoCheckUpdates, migrated.stored.revision, migrated.stored.concurrency],
+      ["mainland", 8, false, true, false, false, 2, 8]);
+    await old.evaluate(() => __BTR_DESKTOP__.setSettings({ concurrency: 16, errorNotices: true }));
+    await old.reload();
+    assert.deepEqual(await old.evaluate(() => { const next = __BTR_DESKTOP__.getSettings(); return [next.concurrency, next.errorNotices, next.mode]; }), [16, true, "mainland"]);
+    await legacy.close();
+    assert.deepEqual(errors, []);
+    console.log("PASS old settings move once to mainland CDN, 8 threads and hidden errors; later choices are kept");
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); server.close(); process.exitCode = 1; });

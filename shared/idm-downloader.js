@@ -63,9 +63,10 @@
     const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
     const semaphore = new Semaphore(core.normalizeSettings(getSettings()).concurrency);
 
-    async function readBody(response, controller, transferId, settings) {
+    async function readBody(response, controller, transferId, settings, received) {
       if (!response.body?.getReader) {
         const bytes = new Uint8Array(await response.arrayBuffer());
+        received.bytes += bytes.byteLength;
         onTransfer({ phase: "progress", id: transferId, bytes: bytes.byteLength });
         return bytes;
       }
@@ -86,6 +87,7 @@
           const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
           chunks.push(chunk);
           total += chunk.byteLength;
+          received.bytes += chunk.byteLength;
           onTransfer({ phase: "progress", id: transferId, bytes: chunk.byteLength });
         }
       } finally {
@@ -112,6 +114,7 @@
       const totalTimer = setTimeout(() => controller.abort(new DOMException("CDN 子块总耗时超限", "TimeoutError")), settings.attemptTimeoutMs);
       const transferId = onTransfer({ phase: "start", kind, totalBytes: piece.length, url });
       const startedAt = performance.now();
+      const received = { bytes: 0 };
       try {
         const response = await nativeFetch(url, {
           method: "GET",
@@ -128,14 +131,15 @@
         if (response.status !== 206 || !contentRange || contentRange.start !== piece.start || contentRange.end !== piece.end) {
           throw new Error(`Range 校验失败：HTTP ${response.status}`);
         }
-        const bytes = await readBody(response, controller, transferId, settings);
+        const bytes = await readBody(response, controller, transferId, settings, received);
         if (bytes.byteLength !== piece.length) throw new Error(`子块长度不符：${bytes.byteLength}/${piece.length}`);
         const seconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
         resolver.success(url, bytes.byteLength / seconds);
         onTransfer({ phase: "done", id: transferId });
         return { bytes, total: contentRange.total, url };
       } catch (error) {
-        resolver.failure(url, error);
+        // Received bytes tell a dead node (0 KiB) apart from a transfer that stalled midway.
+        resolver.failure(url, error, received.bytes);
         const canceled = error?.name === "AbortError";
         onTransfer({ phase: canceled ? "cancel" : "error", id: transferId, error });
         throw error;
@@ -164,14 +168,21 @@
       }
       const settings = core.normalizeSettings(getSettings());
       const limit = Math.min(8, candidates.length);
+      const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
+      const tried = new Set();
       let lastError = null;
 
       const startup = startupMode === true || startupMode === "probe";
       const probe = startupMode === "probe";
       const batchWidth = probe ? limit : 2;
-      for (let offset = 0; offset < limit; offset += batchWidth) {
+      while (tried.size < limit) {
         if (signal?.aborted) throw abortError(signal.reason);
-        const pair = candidates.slice(offset, offset + batchWidth);
+        // A node banned while this piece was waiting is skipped, unless only banned nodes are left.
+        const untried = candidates.filter((url) => !tried.has(url));
+        const open = untried.filter(allowed);
+        const pair = (open.length ? open : untried).slice(0, batchWidth);
+        if (!pair.length) break;
+        pair.forEach((url) => tried.add(url));
         const controllers = pair.map(() => new AbortController());
         const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
         if (signal?.aborted) cancelAll();

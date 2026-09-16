@@ -5,6 +5,8 @@
   const core = root.__BILI_RANGE_CORE__, resolverFactory = root.__BILI_CDN_RESOLVER_FACTORY__;
   const nativeFetch = root.fetch.bind(root), NativeXHR = root.XMLHttpRequest;
   const pending = new Set(), operations = new Set(), resolvers = new Map(), representations = new Map(), active = new Map(), totals = new Map();
+  const KIND_LABELS = { video: "画面", audio: "声音", meta: "视频信息" };
+  const hostOf = value => { try { return new URL(value).hostname; } catch (_) { return ""; } };
   let generation = 0, route = "", transferSequence = 0, latestTransfer = 0, failureStreak = 0;
   // BTR loads on every client version. If a future player stops matching what this adapter
   // expects, stop accelerating in this window instead of adding a failed attempt to every request.
@@ -29,21 +31,29 @@
   }
   function onTransfer(event) {
     if (event.phase === "start") {
-      const id = ++transferSequence; latestTransfer = id; active.set(id, { ...event, received: 0 }); stats.activeThreads = active.size;
+      const id = ++transferSequence; latestTransfer = id; active.set(id, { ...event, id, received: 0, bytes: 0 }); stats.activeThreads = active.size;
       stats.maxThreads = Math.max(stats.maxThreads, active.size); return id;
     }
     if (event.phase === "progress") {
       stats.networkBytes += Number(event.bytes) || 0;
       const transfer = active.get(event.id);
+      if (transfer) transfer.bytes += Number(event.bytes) || 0;
       if (transfer?.range) {
         transfer.received += Number(event.bytes) || 0;
         for (const operation of transfer.operations) wireProgress(operation, transfer.range.start, Math.min(transfer.range.end, transfer.range.start + transfer.received - 1));
       }
     }
+    const ended = active.get(event.id);
+    // Same wording as the browser version, so a node that sent 0 KiB is easy to recognise.
+    if (event.phase === "error" && ended) log("这一小段没能下载下来", `第 ${ended.id} 条线程已收到 ${Math.round(ended.bytes / 1024)} KiB ${KIND_LABELS[ended.kind] || "视频"}数据。\n下载节点：${hostOf(ended.url)}\n原因：${event.error?.message || event.error || "未知"}`, "error", "download", `range-error-${ended.kind}`);
     if (["done", "error", "cancel"].includes(event.phase)) active.delete(event.id);
     stats.activeThreads = active.size;
   }
-  // This is the unmodified 0.9.1.1 downloader. The adapter changes only its host environment.
+  // A node that twice sends nothing is skipped until the video changes.
+  const bans = resolverFactory.createBanList({
+    onBan: host => log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
+  });
+  // This is the shared browser downloader. The adapter changes only its host environment.
   const downloader = root.__BILI_IDM_DOWNLOADER_FACTORY__.createDownloader({
     getSettings: api.getSettings, onTransfer,
     nativeFetch: (url, init) => {
@@ -84,7 +94,7 @@
     if (!resolvers.has(key)) {
       const rep = representations.get(mediaKey(url));
       const exact = rep && [rep.baseUrl, rep.base_url, ...(rep.backupUrl || rep.backup_url || [])].includes(url);
-      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode);
+      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans);
       // Some client responses contain only a signed Akamai URL. Preserve it;
       // never invent a mainland hostname for an Akamai-specific signature.
       resolvers.set(key, Object.freeze({ ...resolver,
@@ -228,10 +238,10 @@
       if (next === route) return;
       generation++; route = String(next || ""); stats.route = route; stats.routeAcceleratedRequests = 0;
       for (const controller of pending) controller.abort(new DOMException("视频已切换", "AbortError"));
-      resolvers.clear(); representations.clear(); totals.clear();
+      resolvers.clear(); representations.clear(); totals.clear(); bans.reset();
       log("已切换视频", "旧视频的下载任务已取消。", "info", "takeover");
     },
-    snapshot: () => ({ ...stats, generation, pending: pending.size }),
+    snapshot: () => ({ ...stats, generation, pending: pending.size, bannedHosts: bans.hosts() }),
     restore() {
       for (const controller of pending) controller.abort(new DOMException("加速已停止", "AbortError"));
       root.fetch = nativeFetch; root.XMLHttpRequest = NativeXHR;

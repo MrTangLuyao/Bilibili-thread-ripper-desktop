@@ -70,14 +70,58 @@
     return [...allowedOriginals, ...synthetic].filter((value, index, all) => all.indexOf(value) === index);
   }
 
-  function createResolver(representation, getMode) {
+  function hostOf(value) {
+    try { return new URL(value).hostname.toLowerCase(); }
+    catch (_error) { return ""; }
+  }
+
+  // A CDN node that twice fails without sending a single byte is skipped for the
+  // rest of the current video. The owner resets the list when the video changes.
+  function createBanList(options = {}) {
+    const limit = Math.max(1, Math.trunc(Number(options.limit)) || 2);
+    const strikes = new Map();
+    const banned = new Set();
+    return Object.freeze({
+      record(url, receivedBytes, error) {
+        if (error?.name === "AbortError" || Number(receivedBytes) > 0) return false;
+        const host = hostOf(url);
+        if (!host || banned.has(host)) return false;
+        const count = (strikes.get(host) || 0) + 1;
+        strikes.set(host, count);
+        if (count < limit) return false;
+        banned.add(host);
+        try { options.onBan?.(host, count, error); } catch (_error) {}
+        return true;
+      },
+      allows: (url) => !banned.has(hostOf(url)),
+      hosts: () => [...banned],
+      reset() {
+        strikes.clear();
+        banned.clear();
+      }
+    });
+  }
+
+  function createResolver(representation, getMode, bans = null) {
     const health = new Map();
     let cursor = 0;
     let mediaRangeCount = 0;
     let rangeCursor = 0;
 
-    function urls() {
+    function allUrls() {
       return representationUrls(representation, getMode?.() === "overseas" ? "overseas" : "mainland");
+    }
+
+    // Banned nodes are left out. If every node is banned, keep using them rather
+    // than leaving the video with no download address at all.
+    function unbanned(list) {
+      if (!bans) return list;
+      const allowed = list.filter(bans.allows);
+      return allowed.length ? allowed : list;
+    }
+
+    function urls() {
+      return unbanned(allUrls());
     }
 
     function ordered(pieceIndex = 0, exclude = new Set()) {
@@ -127,8 +171,8 @@
       const originals = [primary, ...(Array.isArray(backup) ? backup : [])]
         .map(safeMediaUrl)
         .filter(Boolean);
-      const candidates = [...originals, ...urls()]
-        .filter((url, index, all) => all.indexOf(url) === index)
+      const candidates = unbanned([...originals, ...allUrls()]
+        .filter((url, index, all) => all.indexOf(url) === index))
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now);
       return candidates.slice(0, 8);
     }
@@ -155,8 +199,9 @@
       });
     }
 
-    function failure(url, error) {
+    function failure(url, error, receivedBytes = 0) {
       if (error?.name === "AbortError") return;
+      bans?.record(url, receivedBytes, error);
       const old = health.get(url) || {};
       const failures = (old.failures || 0) + 1;
       health.set(url, {
@@ -168,23 +213,25 @@
 
     function status() {
       const now = Date.now();
-      return urls().map((url) => {
+      return allUrls().map((url) => {
         const item = health.get(url) || {};
         return {
           host: new URL(url).hostname,
-          state: (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
+          state: bans && !bans.allows(url) ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
           bps: item.bps || 0
         };
       });
     }
 
-    return Object.freeze({ failure, ordered, rangeCandidates, rescueCandidates, startupCandidates, status, success, urls });
+    const allows = (url) => !bans || bans.allows(url);
+    return Object.freeze({ allows, failure, ordered, rangeCandidates, rescueCandidates, startupCandidates, status, success, urls });
   }
 
   root.__BILI_CDN_RESOLVER_FACTORY__ = Object.freeze({
     GLOBAL_HOSTS,
     MAINLAND_HOSTS,
     OVERSEAS_HOSTS,
+    createBanList,
     createResolver,
     isAkamaiUrl,
     representationUrls,

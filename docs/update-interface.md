@@ -1,14 +1,14 @@
 # 版本和更新文件
 
-对外完整版本是 `主版本-d桌面修订`，例如 `0.9.1.1-d1`、`0.9.1.1-d2`。主版本升级后从 `d1` 开始。`desktop.json` 的 `baseVersion` 与 `adapterRevision` 是构建检查依据，`version` 必须等于两者拼接的完整版本。
+对外完整版本是 `主版本-d桌面修订`，例如 `0.9.1.1-d1`、`0.9.1.1-d2`。主版本升级后从 `d1` 开始，例如 `0.9.1.2-d1`。下文单独写的 d1 到 d5 都是 0.9.1.1 的桌面修订，“d5 起”包括之后的所有版本。`desktop.json` 的 `baseVersion` 与 `adapterRevision` 是构建检查依据，`version` 必须等于两者拼接的完整版本。
 
 `latest.json` 是客户端和一键安装命令唯一读取的更新入口，固定在本仓库 main 分支。不使用 GitHub Release，也不需要额外服务器或密钥。
 
 ```json
 {
   "schema": 1,
-  "version": "0.9.1.1-d5",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.1-d5.zip",
+  "version": "0.9.1.2-d1",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.2-d1.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }
@@ -54,6 +54,12 @@ try{require("./btr-desktop/bootstrap.cjs")}catch(error){console.error("BTR boots
 BTR 出错只记录错误，官方程序照常启动。入口开头的 BOM 和 `"use strict"` 保持在最前面。页面脚本仍只在 `https://bilipc.bilibili.com` 的 `index.html`、`player.html` 顶层窗口注入，设置界面找不到对应元素就不挂载。同一个播放窗口里加速连续失败 6 次，这个窗口就暂停加速，之后的请求直接交给客户端，重新打开播放窗口会再次尝试。
 
 d4 的入口前缀没有 try/catch，d5 检查时会视为需要修复，并从原始备份重新生成补丁。
+
+## 默认设置和 CDN 停用
+
+从 0.9.1.2 起，默认是大陆 CDN、8 线程，“显示错误”默认关闭。设置保存在 `localStorage` 的 `BTR_Desktop.settings.v1`，其中 `revision` 为 2。读到没有 `revision` 或旧 `revision` 的设置时，只把 CDN、线程数和显示错误改成新的默认值并写回一次，Debug、分类筛选、自动检查更新等其余设置保留。没有保存过设置的新安装直接使用默认值。
+
+共用的 `cdn-resolver.js` 提供 `createBanList`。下载器每次失败都把这次实际收到的字节数交给它：被取消的请求不算；收到过数据后才中断的不算；同一个节点累计两次一个字节都没收到，就停用这个节点。桌面版每个视频（BV 号加 CID）一份记录，切换视频时清空；浏览器版按页面路由保存，同一视频重新接管也不会清空。停用后，选节点、补块和起播候选都跳过它，已经排队等待的子块在下一次尝试前也会跳过。所有候选都被停用时仍使用原来的节点，避免整个视频没有下载地址。停用时显示一条红色的“已停用这个 CDN 节点”；每次子块失败显示“这一小段没能下载下来”，包含已收到的 KiB 和节点，两者都受“显示错误”控制。桌面版的状态快照 `__BTR_DESKTOP__.getStatus().transport.bannedHosts` 列出当前视频停用的节点。
 
 ## 后台监视和重新接入
 

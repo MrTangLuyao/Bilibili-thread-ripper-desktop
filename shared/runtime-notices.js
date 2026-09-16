@@ -118,10 +118,10 @@
   root.__BTR_RUNTIME_NOTICES__ = Object.freeze({
     log,
     configure(next) {
-      const changed = settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices || settings.errorNotices !== (next.errorNotices !== false)
+      const changed = settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices || settings.errorNotices !== (next.errorNotices === true)
         || ["playback", "buffer"].some(category => (settings.debugCategories?.[category] !== false) !== (next.debugCategories?.[category] !== false));
       const wasDebug = settings.enabled && settings.debugNotices;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices !== false, debugCategories: { ...next.debugCategories } };
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
       for (const [key, entry] of pending) if (!allowed(entry.level, entry.category)) pending.delete(key);
       if (!pending.size) {
         clearTimeout(flushTimer);

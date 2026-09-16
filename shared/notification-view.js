@@ -267,7 +267,7 @@
   root.__BTR_NOTIFICATION_VIEW__ = Object.freeze({
     configure(next) {
       if (settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices) playback = null;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices !== false, debugCategories: { ...next.debugCategories } };
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
       if (!settings.debugNotices) lastMode = "";
       for (const card of cards) {
         const debugAllowed = settings.debugNotices && settings.debugCategories[card.category] !== false;
