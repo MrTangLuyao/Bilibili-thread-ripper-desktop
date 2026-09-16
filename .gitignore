@@ -2,5 +2,6 @@ test-output/
 *.log
 node_modules/
 BTR_Desktop.exe
+BTR_Guard.exe
 release/
 release-stage-*/

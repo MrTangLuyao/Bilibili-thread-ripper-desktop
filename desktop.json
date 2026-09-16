@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "0.9.1.1-d4",
+  "version": "0.9.1.1-d5",
   "baseVersion": "0.9.1.1",
-  "adapterRevision": 4,
-  "supportedClientVersions": ["1.18.0"],
+  "adapterRevision": 5,
+  "legacyClientVersions": ["1.18.0"],
   "update": {
     "enabled": true,
     "manifestUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/latest.json",

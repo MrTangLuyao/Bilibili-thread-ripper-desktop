@@ -5,8 +5,11 @@
   const core = root.__BILI_RANGE_CORE__, resolverFactory = root.__BILI_CDN_RESOLVER_FACTORY__;
   const nativeFetch = root.fetch.bind(root), NativeXHR = root.XMLHttpRequest;
   const pending = new Set(), operations = new Set(), resolvers = new Map(), representations = new Map(), active = new Map(), totals = new Map();
-  let generation = 0, route = "", transferSequence = 0, latestTransfer = 0;
-  const stats = { acceleratedRequests: 0, routeAcceleratedRequests: 0, acceleratedBytes: 0, networkBytes: 0, maxThreads: 0, fallbackRequests: 0, abortedRequests: 0, timedOutRequests: 0, activeThreads: 0, lastError: "", route: "", xhrRequests: 0, fetchRequests: 0 };
+  let generation = 0, route = "", transferSequence = 0, latestTransfer = 0, failureStreak = 0;
+  // BTR loads on every client version. If a future player stops matching what this adapter
+  // expects, stop accelerating in this window instead of adding a failed attempt to every request.
+  const FAILURE_LIMIT = 6;
+  const stats = { suspended: false, acceleratedRequests: 0, routeAcceleratedRequests: 0, acceleratedBytes: 0, networkBytes: 0, maxThreads: 0, fallbackRequests: 0, abortedRequests: 0, timedOutRequests: 0, activeThreads: 0, lastError: "", route: "", xhrRequests: 0, fetchRequests: 0 };
   function wireProgress(operation, start, end) {
     if (operation.controller.signal.aborted || operation.generation !== generation || end < start) return;
     const merged = [];
@@ -63,7 +66,7 @@
   const mediaKey = value => { try { const u = new URL(value, location.href); return u.pathname; } catch (_) { return ""; } };
   function eligible(url, method, headers) {
     if (location.origin === "https://bilipc.bilibili.com" && location.pathname !== "/player.html") return null;
-    if (!api.getSettings().enabled || String(method || "GET").toUpperCase() !== "GET" || !core.isBilibiliMediaUrl(url)) return null;
+    if (stats.suspended || !api.getSettings().enabled || String(method || "GET").toUpperCase() !== "GET" || !core.isBilibiliMediaUrl(url)) return null;
     api.synchronizePlayer?.();
     let match;
     try { match = /^bytes=(\d+)-(\d+)$/.exec(new Headers(headers).get("range") || ""); } catch (_) { return null; }
@@ -118,7 +121,7 @@
       });
       if (controller.signal.aborted || ticket !== generation) throw new DOMException("视频已切换", "AbortError");
       const bytes = result.bytes || core.concatChunks(chunks, range.length);
-      stats.acceleratedRequests++; stats.routeAcceleratedRequests++; stats.acceleratedBytes += bytes.byteLength;
+      stats.acceleratedRequests++; stats.routeAcceleratedRequests++; stats.acceleratedBytes += bytes.byteLength; failureStreak = 0;
       log("视频数据已交给客户端", `${Math.round(bytes.byteLength / 1024)} KiB，由 ${result.pieceCount || 1} 个子块下载完成。`, "success", "buffer", "segments");
       return { bytes, total: result.total, type: rep?._btrKind === "audio" ? "audio/mp4" : "video/mp4" };
     } finally { pending.delete(controller); operations.delete(operation); signal?.removeEventListener("abort", abort); }
@@ -127,6 +130,10 @@
     stats.fallbackRequests++;
     stats.lastError = String(error?.message || error).replace(/https?:\/\/\S+/g, "[CDN]").slice(0, 160);
     log("加速请求失败，已交回客户端重试", stats.lastError, "error");
+    if (++failureStreak < FAILURE_LIMIT || stats.suspended) return;
+    // Requests already running finish or fall back on their own; aborting them would fail the player.
+    stats.suspended = true;
+    log("BTR 加速已暂停", `连续 ${FAILURE_LIMIT} 次加速失败，这个播放窗口改用客户端原生下载。重新打开播放窗口会再次尝试。`, "error");
   }
   root.fetch = function (input, init) {
     const url = typeof input === "string" || input instanceof URL ? String(input) : input?.url;

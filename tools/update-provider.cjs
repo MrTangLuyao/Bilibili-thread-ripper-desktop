@@ -3,9 +3,12 @@ const RAW = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-rippe
 const VERSION = /^\d+\.\d+\.\d+\.\d+-d[1-9]\d*$/;
 function validateManifest(value) {
   if (!value || value.schema !== 1 || !VERSION.test(value.version)) throw Error("Invalid desktop version manifest");
-  if (!/^[a-f0-9]{64}$/i.test(value.sha256) || !Array.isArray(value.supportedClientVersions) || !value.supportedClientVersions.length || !value.supportedClientVersions.every(v => /^\d+(\.\d+){2,3}$/.test(v))) throw Error("Invalid update checksum or compatibility list");
+  if (!/^[a-f0-9]{64}$/i.test(value.sha256)) throw Error("Invalid update checksum");
+  // Only d1-d4 updaters read supportedClientVersions. Validate it when present, never require it.
+  const legacy = value.supportedClientVersions;
+  if (legacy !== undefined && (!Array.isArray(legacy) || !legacy.every(v => /^\d+(\.\d+){2,3}$/.test(v)))) throw Error("Invalid legacy client list");
   if (value.downloadUrl !== `${RAW}packages/BTR_Desktop-${value.version}.zip`) throw Error("Update package must belong to this repository");
-  return {schema:1,version:value.version,sha256:value.sha256.toLowerCase(),downloadUrl:value.downloadUrl,supportedClientVersions:value.supportedClientVersions};
+  return {schema:1,version:value.version,sha256:value.sha256.toLowerCase(),downloadUrl:value.downloadUrl};
 }
 async function check(config, installed, fetchImpl = globalThis.fetch || require("./https-json.cjs")) {
   if (!config.enabled) return {state:"not-configured",message:"更新检查已关闭"};

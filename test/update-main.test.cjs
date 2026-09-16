@@ -1,13 +1,14 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm"),crypto=require("node:crypto"),{EventEmitter}=require("node:events");
 const source=fs.readFileSync(path.join(__dirname,"../src/update-main.cjs"),"utf8");
-function setup({response=0,tampered=false,launcherTampered=false,spawnError=false,unavailable=false,offline=false}={}) {
+function setup({response=0,tampered=false,launcherTampered=false,guardTampered=false,noGuard=false,spawnError=false,unavailable=false,offline=false}={}) {
   const handlers={},calls=[],script=Buffer.from("# verified installer"),root=path.resolve("C:/BTR user's files");
-  const config={version:"0.9.1.1-d3",update:{enabled:true},installerSha256:crypto.createHash("sha256").update(script).digest("hex"),launcherSha256:crypto.createHash("sha256").update(script).digest("hex")};
+  const digest=crypto.createHash("sha256").update(script).digest("hex");
+  const config={version:"0.9.1.1-d5",update:{enabled:true},installerSha256:digest,launcherSha256:digest,...(noGuard?{}:{guardSha256:digest})};
   let now=10000, nextTimer=0; const timers=new Map();
   let requests=0;
   const event={sender:{isDestroyed:()=>false,send:(channel,result)=>calls.push({channel,result})},senderFrame:{url:"https://bilipc.bilibili.com/index.html#/settings"}};event.sender.mainFrame=event.senderFrame;
-  const fakeFs={existsSync:()=>true,readFileSync:file=>file.endsWith("update-config.json")?JSON.stringify(config):file.endsWith("installed.json")?JSON.stringify({installRoot:root}):(tampered || (launcherTampered && file.endsWith("BTR_Desktop.exe")))?Buffer.from("changed"):script};
+  const fakeFs={existsSync:()=>true,readFileSync:file=>file.endsWith("update-config.json")?JSON.stringify(config):file.endsWith("installed.json")?JSON.stringify({installRoot:root}):(tampered || (launcherTampered && file.endsWith("BTR_Desktop.exe")) || (guardTampered && file.endsWith("BTR_Guard.exe")))?Buffer.from("changed"):script};
   const check=async()=>{requests++;if(offline)throw Error("offline");return {state:unavailable?"current":"available",manifest:{version:"0.9.1.1-d4",sha256:"a".repeat(64)}};};
   const child=new EventEmitter();child.unref=()=>calls.push({unref:true});
   const module={exports:{}};
@@ -18,7 +19,7 @@ function setup({response=0,tampered=false,launcherTampered=false,spawnError=fals
     return require(name);
   }});
   module.exports.register({ipcMain:{handle:(name,fn)=>handlers[name]=fn},BrowserWindow:{fromWebContents:()=>null},dialog:{showMessageBox:async options=>{calls.push({dialog:options});return {response};}}});
-  return {check:handlers["btr-desktop:update-check"],install:handlers["btr-desktop:update-install"],remove:handlers["btr-desktop:uninstall"],configure:handlers["btr-desktop:auto-config"],event,calls,child,requests:()=>requests,advance:async ms=>{now+=ms;for(const [id,t] of [...timers])if(t.at<=now){timers.delete(id);await t.fn();}},timers};
+  return {startGuard:module.exports.startGuard,check:handlers["btr-desktop:update-check"],install:handlers["btr-desktop:update-install"],remove:handlers["btr-desktop:uninstall"],configure:handlers["btr-desktop:auto-config"],event,calls,child,requests:()=>requests,advance:async ms=>{now+=ms;for(const [id,t] of [...timers])if(t.at<=now){timers.delete(id);await t.fn();}},timers};
 }
 test("update IPC is restricted to the official top-level renderer",async()=>{
   const s=setup();assert.equal((await s.check(s.event)).state,"available");await s.check(s.event);assert.equal(s.requests(),1);
@@ -83,4 +84,14 @@ test("automatic offline checks stay quiet and retry, startup off does not fetch"
   const s=setup({offline:true});s.configure(s.event,{enabled:false});await s.advance(1800000);assert.equal(s.requests(),0);
   s.configure(s.event,{enabled:true,changed:true});await s.advance(1500);assert.equal(s.requests(),1);assert.equal(s.calls.filter(x=>x.dialog).length,0);
   await s.advance(1800000);assert.equal(s.requests(),2);
+});
+
+test("client start keeps a verified guard running outside the client's job",()=>{
+  const s=setup();assert.equal(s.startGuard(),true);
+  const call=s.calls.find(x=>x.exe);assert.match(call.exe,/BTR user's files\\BTR_Guard\.exe$/);assert.deepEqual(Array.from(call.args),["guard","--register"]);
+  assert.equal(call.options.detached,true);assert.equal(call.options.windowsHide,true);assert.equal(call.options.stdio,"ignore");assert.equal(call.options.env.ELECTRON_RUN_AS_NODE,undefined);
+  assert.ok(s.calls.some(x=>x.unref));
+  const tampered=setup({guardTampered:true});assert.equal(tampered.startGuard(),false);assert.equal(tampered.calls.filter(x=>x.exe).length,0);
+  // A deployment from a release without a guard hash never starts an unverified program.
+  const legacy=setup({noGuard:true});assert.equal(legacy.startGuard(),false);assert.equal(legacy.calls.filter(x=>x.exe).length,0);
 });

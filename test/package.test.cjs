@@ -4,6 +4,11 @@ const { Asar, sha } = require("../tools/asar.cjs");
 const { patch, inspect, run } = require("../tools/client-package.cjs");
 const { check, validateManifest, RAW } = require("../tools/update-provider.cjs");
 const vm = require("node:vm");
+const PREFIX = 'try{require("./btr-desktop/bootstrap.cjs")}catch(error){console.error("BTR bootstrap:",error&&error.message)}\n';
+function clientArchive(version, extra = {}) {
+  const a = emptyArchive(); a.set("package.json", JSON.stringify({ name: "bilibili", version, ...extra }));
+  return a;
+}
 function emptyArchive() {
   const json = Buffer.from('{"files":{}}'), padded = Math.ceil((json.length + 4) / 4) * 4;
   const bytes = Buffer.alloc(padded + 12); bytes.writeUInt32LE(4); bytes.writeUInt32LE(padded + 4, 4); bytes.writeUInt32LE(padded, 8); bytes.writeUInt32LE(json.length, 12); json.copy(bytes, 16);
@@ -20,7 +25,7 @@ test("ASAR preserves existing bytes and embeds new resources with integrity", ()
   assert.deepEqual(result.read("original.bin"), binary);
   assert.equal(result.entry("btr-desktop/desktop.js").integrity.hash, sha("window.BTR=true"));
   assert.equal(result.text("render/player.html"), "<html><head></head><body>PLAYER</body></html>");
-  assert.equal(result.text("index.js"), 'require("./btr-desktop/bootstrap.cjs");\noriginalEntry();');
+  assert.equal(result.text("index.js"), PREFIX + "originalEntry();");
   assert.match(result.text("btr-desktop/preload.cjs"), /bilipc/);
   assert.equal(inspect(result).installed.version, "0.9.1.1-d1");
   assert.match(result.text("btr-desktop/preload.cjs"), /event.isTrusted/);
@@ -28,9 +33,33 @@ test("ASAR preserves existing bytes and embeds new resources with integrity", ()
   assert.throws(() => result.set("../escape", "x"), /Unsafe/);
   assert.throws(() => result.set("C:/escape", "x"), /Unsafe/);
 });
-test("unknown client builds fail closed", () => {
-  const a = emptyArchive(); a.set("package.json", '{"name":"bilibili","version":"99.0.0"}');
-  assert.throws(() => patch(new Asar(a.pack()), Buffer.from("x"), {}), /暂未适配/);
+test("any client version with a plain entry is patched; unknown structures fail closed", () => {
+  const future = clientArchive("99.0.0"); future.set("index.js", "future();");
+  const patched = new Asar(patch(new Asar(future.pack()), Buffer.from("x"), {}));
+  assert.equal(patched.text("index.js"), PREFIX + "future();");
+  assert.equal(inspect(patched).clientVersion, "99.0.0");
+  // Electron honours package.json main; the prefix must resolve from that folder.
+  const moved = clientArchive("2.0.0", { main: "./dist/main" }); moved.set("dist/main.js", "moved();");
+  const movedPatch = new Asar(patch(new Asar(moved.pack()), Buffer.from("x"), {}));
+  assert.equal(movedPatch.text("dist/main.js"), PREFIX.replace("./btr-desktop", "../btr-desktop") + "moved();");
+  assert.equal(inspect(movedPatch).entry, "dist/main.js");
+  // No entry, a compiled entry, an unsafe entry or another app: leave the official files alone.
+  const missing = clientArchive("3.0.0"); missing.set("render/player.html", "<html></html>");
+  const bytecode = clientArchive("3.0.0", { main: "main.jsc" }); bytecode.set("main.jsc", "binary");
+  const unsafe = clientArchive("3.0.0", { main: "../escape.js" });
+  for (const archive of [missing, bytecode, unsafe]) {
+    assert.equal(inspect(new Asar(archive.pack())).entry, null);
+    assert.throws(() => patch(new Asar(archive.pack()), Buffer.from("x"), {}), /入口结构/);
+  }
+  const other = emptyArchive(); other.set("package.json", '{"name":"other","version":"1.18.0"}'); other.set("index.js", "x();");
+  assert.throws(() => patch(new Asar(other.pack()), Buffer.from("x"), {}), /不是官方/);
+  // A BOM and a strict-mode directive stay in front of the BTR prefix.
+  const strict = clientArchive("4.0.0"); strict.set("index.js", "﻿'use strict';\nstrictEntry();");
+  assert.equal(new Asar(patch(new Asar(strict.pack()), Buffer.from("x"), {})).text("index.js"), "﻿'use strict';\n" + PREFIX + "strictEntry();");
+  // A failing BTR bootstrap is logged and the official entry still runs.
+  const errors = [], ran = [];
+  vm.runInNewContext(PREFIX + "ran.push('official');", { ran, require: () => { throw Error("broken BTR"); }, console: { error: (...args) => errors.push(args.join(" ")) } });
+  assert.deepEqual(ran, ["official"]); assert.match(errors[0], /broken BTR/);
 });
 
 test("isolated preload bridges checks but only real user clicks can request installation", async () => {
@@ -78,15 +107,37 @@ test("installation repair survives an official overwrite and removal restores ex
     fs.writeFileSync(backup,Buffer.from("damaged"));
     assert.throws(()=>run("check-remove",dir));assert.throws(()=>run("remove",dir));assert.deepEqual(fs.readFileSync(target),beforeRemoval);
     fs.writeFileSync(backup,original);
+    // A d4 deployment used an unguarded prefix. It is not current and repairs from the backup.
+    const legacy = new Asar(fs.readFileSync(target));
+    legacy.set("index.js", 'require("./btr-desktop/bootstrap.cjs");\noriginalEntry();');
+    fs.writeFileSync(target, legacy.pack());
+    assert.equal(run("status", dir).current, false);
+    const deploymentFile = path.join(dir,"resources/btr-desktop-backups/deployment.json");
+    fs.writeFileSync(deploymentFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(deploymentFile)), patchedSha256: sha(fs.readFileSync(target)) }));
+    assert.equal(run("repair", dir).state, "installed");
+    assert.equal(run("status", dir).current, true);
+    assert.equal(new Asar(fs.readFileSync(target)).text("index.js"), PREFIX + "originalEntry();");
     assert.equal(run("remove", dir).state, "removed");
     assert.deepEqual(fs.readFileSync(target), original);
-    const unknown = new Asar(original); unknown.set("package.json", '{"name":"bilibili","version":"99.0.0"}');
-    const updated = unknown.pack(); fs.writeFileSync(target, updated);
-    assert.equal(run("repair", dir).state, "unsupported-client");
+    // An official full installer brings a new build. It is patched, and only its own original is kept.
+    const next = new Asar(original); next.set("package.json", '{"name":"bilibili","version":"99.0.0"}'); next.set("index.js", "nextEntry();");
+    const updated = next.pack(); fs.writeFileSync(target, updated);
+    assert.equal(run("status", dir).supported, true);
+    const reconnected = run("repair", dir);
+    assert.equal(reconnected.state, "installed"); assert.deepEqual(reconnected.removedBackups, [sha(original) + ".asar"]);
+    assert.deepEqual(fs.readdirSync(path.join(dir,"resources/btr-desktop-backups")).sort(), [sha(updated) + ".asar", "deployment.json"].sort());
+    assert.equal(run("status", dir).current, true);
+    assert.equal(run("remove", dir).state, "removed");
     assert.deepEqual(fs.readFileSync(target), updated);
+    // A build whose structure is not recognized stays exactly as the official installer left it.
+    const strange = new Asar(original); strange.set("package.json", '{"name":"bilibili","version":"100.0.0","main":"app.jsc"}');
+    const unknown = strange.pack(); fs.writeFileSync(target, unknown);
+    assert.equal(run("status", dir).supported, false);
+    assert.equal(run("repair", dir).state, "unsupported-client");
+    assert.deepEqual(fs.readFileSync(target), unknown);
     assert.equal(run("remove", dir).state, "not-installed");
     assert.equal(run("check-remove", dir).state, "not-installed");
-    assert.deepEqual(fs.readFileSync(target), updated);
+    assert.deepEqual(fs.readFileSync(target), unknown);
   } finally { fs.rmSync(dir, {recursive:true}); }
 });
 test("repository updates use exact version inequality including rollback", async () => {
@@ -99,6 +150,10 @@ test("repository updates use exact version inequality including rollback", async
   for(const version of ["0.9.1.1", "0.9.1.1-d2", "0.9.2.0-d1"]) assert.equal((await check(options,{version},fakeFetch)).state,"available");
   assert.throws(()=>validateManifest({...manifest,downloadUrl:"https://evil.example/pkg.zip"}),/repository/);
   assert.throws(()=>validateManifest({...manifest,version:"../escape"}),/version/);
+  // d5 no longer needs the client list; older updaters still get a valid one when present.
+  const {supportedClientVersions,...withoutList}=manifest;
+  assert.equal(validateManifest(withoutList).version,"0.9.1.1-d1");
+  assert.throws(()=>validateManifest({...manifest,supportedClientVersions:["bad"]}),/legacy/);
   await assert.rejects(check(options,{},async()=>({ok:false,status:404})),/404/);
   await assert.rejects(check(options,{},async()=>({ok:true,text:async()=>"x".repeat(65537)})),/too large/);
   await assert.rejects(check(options,{},async()=>{throw Error("offline")}),/offline/);

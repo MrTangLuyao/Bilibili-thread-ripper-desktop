@@ -9,6 +9,7 @@ $env:LOCALAPPDATA=Join-Path $Fixture 'user-data'
 [IO.Directory]::CreateDirectory($env:LOCALAPPDATA) | Out-Null
 $script:Stopped=0
 $script:BadHash=$false
+$script:Guards=@()
 function Get-BtrBytes([string]$Url,[int]$Limit) {
     if ($Url -like 'https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/latest.json?*') {
         $value=Get-Content -LiteralPath (Join-Path $Project 'latest.json') -Raw | ConvertFrom-Json
@@ -23,6 +24,8 @@ function Stop-BtrClient([string]$Folder) {
     $script:Stopped++
 }
 function Get-BtrShortcutPath { return Join-Path $Fixture 'BTR Desktop.lnk' }
+# Never register a real startup entry for a fixture installation.
+function Start-BtrGuard([string]$InstalledRoot) { $script:Guards += $InstalledRoot }
 $client=Join-Path $Fixture 'client'
 $target=Join-Path $client 'resources\app.asar'
 $before=Get-BtrSha ([IO.File]::ReadAllBytes($target))
@@ -34,6 +37,8 @@ $script:BadHash=$false
 Install-BtrDesktop $client $true
 $current=Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'BTR_Desktop\current.json') -Raw | ConvertFrom-Json
 if($current.version -ne (Get-Content -LiteralPath (Join-Path $Project 'desktop.json') -Raw | ConvertFrom-Json).version -or $script:Stopped -ne 1){throw 'Installation not completed'}
+if($script:Guards.Count -ne 1 -or $script:Guards[0] -ne $current.installPath){throw 'Installation did not start the guard for its own folder'}
+if(-not (Test-Path -LiteralPath (Join-Path $current.installPath 'BTR_Guard.exe') -PathType Leaf)){throw 'Guard program missing from the installation'}
 $firstRoot=$current.installPath
 if(Test-Path -LiteralPath (Get-BtrShortcutPath)){throw 'Installer unexpectedly created a shortcut'}
 # Simulate the old release's shortcut: upgrading must remove it, not replace it.
@@ -57,16 +62,35 @@ if(-not (Test-Path -LiteralPath (Get-BtrShortcutPath))){throw 'Launcher deleted 
 $legacy=$shell.CreateShortcut((Get-BtrShortcutPath));$legacy.TargetPath=$launcher;$legacy.Arguments='launch --client "'+$client+'"';$legacy.Save()
 $status=(& $launcher status --client $client --noninteractive)|ConvertFrom-Json
 if($LASTEXITCODE -ne 0 -or -not $status.current -or $status.installed.installRoot -ne $current.installPath){throw 'Installed status is incorrect'}
+# While one maintenance task holds the lock, another one (and the guard) must wait.
+$held=Enter-BtrMaintenance
+$blocked=$false
+try { (Enter-BtrMaintenance 1).Dispose() } catch { $blocked=$_.Exception.Message -match 'Another BTR maintenance' }
+$held.Dispose()
+if(-not $blocked){throw 'Maintenance lock did not block a second task'}
+(Enter-BtrMaintenance 1).Dispose()
+# An official full installer replaced app.asar with a newer build. Reconnecting works offline,
+# accepts the new version, keeps only the new original and does not start a second guard.
+function Get-BtrBytes([string]$Url,[int]$Limit) { throw 'Network must not be used by reconnect or uninstall' }
+$oldOriginal=$before
+$next=[IO.File]::ReadAllBytes((Join-Path $Fixture 'next-app.asar'))
+[IO.File]::WriteAllBytes($target,$next)
+$before=Get-BtrSha $next
+$guards=$script:Guards.Count
+Repair-BtrDesktop $client $current.installPath $true
+$status=(& $launcher status --client $client --noninteractive)|ConvertFrom-Json
+if(-not $status.current -or $status.clientVersion -ne '1.19.0' -or $script:Stopped -ne 3 -or $script:Guards.Count -ne $guards){throw 'Reconnect did not patch the new client build'}
+$backups=Join-Path $client 'resources\btr-desktop-backups'
+if((Test-Path -LiteralPath (Join-Path $backups ($oldOriginal+'.asar'))) -or -not (Test-Path -LiteralPath (Join-Path $backups ($before+'.asar')))){throw 'The replaced build backup was kept or the new original is missing'}
 # Uninstall must not need GitHub, and a damaged backup must not close the client.
-function Get-BtrBytes([string]$Url,[int]$Limit) { throw 'Network must not be used by uninstall' }
-$record=Get-Content -LiteralPath (Join-Path $client 'resources\btr-desktop-backups\deployment.json') -Raw | ConvertFrom-Json
-$backup=Join-Path $client ('resources\btr-desktop-backups\'+$record.originalSha256+'.asar')
+$record=Get-Content -LiteralPath (Join-Path $backups 'deployment.json') -Raw | ConvertFrom-Json
+$backup=Join-Path $backups ($record.originalSha256+'.asar')
 $originalBytes=[IO.File]::ReadAllBytes($backup)
 $patchedHash=Get-BtrSha ([IO.File]::ReadAllBytes($target))
 [IO.File]::WriteAllText($backup,'damaged')
 $refused=$false
 try { Remove-BtrDesktop $client $current.installPath $true } catch { $refused=$true }
-if(-not $refused -or $script:Stopped -ne 2 -or (Get-BtrSha ([IO.File]::ReadAllBytes($target))) -ne $patchedHash){throw 'Bad backup did not block removal before closing client'}
+if(-not $refused -or $script:Stopped -ne 3 -or (Get-BtrSha ([IO.File]::ReadAllBytes($target))) -ne $patchedHash){throw 'Bad backup did not block removal before closing client'}
 [IO.File]::WriteAllBytes($backup,$originalBytes)
 $accountFile=Join-Path $env:LOCALAPPDATA 'account-sentinel.json'
 [IO.File]::WriteAllText($accountFile,'keep-account-data')
@@ -74,7 +98,7 @@ Remove-BtrDesktop $client $current.installPath $false
 $deadline=[DateTime]::UtcNow.AddSeconds(3)
 while(-not (Test-Path -LiteralPath $env:BTR_TEST_LAUNCH_MARKER) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100}
 if(-not (Test-Path -LiteralPath $env:BTR_TEST_LAUNCH_MARKER)){throw 'Official client was not restarted'}
-if((Get-BtrSha ([IO.File]::ReadAllBytes($target))) -ne $before -or $script:Stopped -ne 3){throw 'Removal did not restore exact original bytes'}
+if((Get-BtrSha ([IO.File]::ReadAllBytes($target))) -ne $before -or $script:Stopped -ne 4){throw 'Removal did not restore exact original bytes'}
 if((Test-Path -LiteralPath (Get-BtrShortcutPath)) -or (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'BTR_Desktop\current.json'))){throw 'Matching BTR shortcut or install pointer not removed'}
 if([IO.File]::ReadAllText($accountFile) -ne 'keep-account-data' -or -not (Test-Path -LiteralPath $backup)){throw 'User data or original backup was removed'}
 # A shortcut pointing elsewhere and another installation record must be left alone.
@@ -92,4 +116,4 @@ $entry=$zip.CreateEntry('BTR_Desktop/../../escape.txt');$writer=New-Object IO.St
 $rejected=$false
 try{Expand-BtrPackage $badZip (Join-Path $Fixture 'extract')}catch{$rejected=$true}
 if(-not $rejected -or (Test-Path -LiteralPath (Join-Path $Fixture 'escape.txt'))){throw 'Unsafe ZIP was not rejected'}
-'PASS Windows PowerShell IEX installation, reinstall, offline uninstall, backup failure, exact restoration, scoped cleanup and unsafe ZIP rejection'
+'PASS Windows PowerShell IEX installation, reinstall, maintenance lock, offline reconnect to a new client build, offline uninstall, backup failure, exact restoration, scoped cleanup and unsafe ZIP rejection'

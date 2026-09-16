@@ -5,8 +5,19 @@ const path = require("node:path");
 const { Asar, sha } = require("./asar.cjs");
 const project = path.resolve(__dirname, "..");
 const config = JSON.parse(fs.readFileSync(path.join(project, "desktop.json")));
-const BUNDLE_FILE = "btr-desktop/desktop.js";
-const BOOTSTRAP_PREFIX = 'require("./btr-desktop/bootstrap.cjs");\n';
+const BUNDLE_FILE = "btr-desktop/desktop.js", BOOTSTRAP_FILE = "btr-desktop/bootstrap.cjs";
+// BTR must never stop the official client from starting, whatever its version.
+function bootstrapPrefix(entry) {
+  const relative = path.posix.relative(path.posix.dirname(entry), BOOTSTRAP_FILE);
+  return `try{require(${JSON.stringify(relative.startsWith(".") ? relative : "./" + relative)})}catch(error){console.error("BTR bootstrap:",error&&error.message)}\n`;
+}
+// A BOM and a leading "use strict" directive must stay first, or the official file changes meaning.
+function splitHead(text) {
+  const head = /^﻿?(?:\s*(["'])use strict\1[ \t]*;?[ \t]*(?:\r?\n)?)?/.exec(text)[0];
+  return [head, text.slice(head.length)];
+}
+function withBootstrap(entry, text) { const [head, body] = splitHead(text); return head + bootstrapPrefix(entry) + body; }
+function hasBootstrap(entry, text) { return splitHead(text)[1].startsWith(bootstrapPrefix(entry)); }
 function hooks(bundle) {
   const bootstrap = fs.readFileSync(path.join(project, "src", "bootstrap.cjs"));
   const preload = Buffer.from(`"use strict";\n(() => {\n` +
@@ -24,26 +35,38 @@ function hooks(bundle) {
     "update-main":fs.readFileSync(path.join(project,"src","update-main.cjs")),
     "update-provider":fs.readFileSync(path.join(project,"tools","update-provider.cjs")),
     "https-json":fs.readFileSync(path.join(project,"tools","https-json.cjs")),
-    "update-config":Buffer.from(JSON.stringify({...config,installerSha256:sha(fs.readFileSync(path.join(project,"install.ps1"))),launcherSha256:sha(fs.readFileSync(path.join(project,"BTR_Desktop.exe")))}))
+    "update-config":Buffer.from(JSON.stringify({...config,installerSha256:sha(fs.readFileSync(path.join(project,"install.ps1"))),launcherSha256:sha(fs.readFileSync(path.join(project,"BTR_Desktop.exe"))),guardSha256:sha(fs.readFileSync(path.join(project,"BTR_Guard.exe")))}))
   };
 }
 const hookFile = key => `btr-desktop/${key}.${key === "update-config" ? "json" : "cjs"}`;
 function sameHooks(archive, expected) {return Object.entries(expected).every(([key,value]) => archive.entry(hookFile(key)) && sha(archive.read(hookFile(key))) === sha(value));}
+// Electron starts package.json "main" (index.js by default). Only a plain JavaScript entry
+// stored inside the archive can take the BTR prefix; anything else is left untouched.
+function mainEntry(archive, app) {
+  const main = typeof app.main === "string" && app.main.trim() ? app.main.trim().replace(/^\.\//, "") : "index.js";
+  for (const name of [main, `${main}.js`, `${main}/index.js`]) {
+    try {
+      const entry = archive.entry(name);
+      if (/\.c?js$/.test(name) && entry && !entry.files && !entry.unpacked && !entry.link) return name;
+    } catch (_) { return null; }
+  }
+  return null;
+}
 function inspect(archive) {
-  const app = JSON.parse(archive.text("package.json"));
-  if (app.name !== "bilibili") throw Error("目标不是官方 Bilibili 客户端");
+  let app;
+  try { app = JSON.parse(archive.text("package.json")); } catch (_) { app = null; }
+  if (app?.name !== "bilibili") throw Error("目标不是官方 Bilibili 客户端");
   let installed = null;
   if (archive.entry("btr-desktop/installed.json")) installed = JSON.parse(archive.text("btr-desktop/installed.json"));
-  return { clientVersion: app.version, installed };
+  return { clientVersion: String(app.version || "unknown"), installed, entry: mainEntry(archive, app) };
 }
 function patch(original, bundle, metadata) {
   const info = inspect(original);
-  if (!config.supportedClientVersions.includes(info.clientVersion)) throw Error(`暂未适配客户端 ${info.clientVersion}，没有修改官方文件`);
   if (info.installed) throw Error("只能在已验证的原始备份上制作补丁");
-  if (!original.entry("index.js") || !original.entry("render/player.html")) throw Error("客户端入口结构不匹配");
-  const entry = original.text("index.js");
-  if (entry.includes(BOOTSTRAP_PREFIX)) throw Error("客户端已经包含 BTR 入口");
-  original.set("index.js", BOOTSTRAP_PREFIX + entry);
+  if (!info.entry) throw Error(`无法识别客户端 ${info.clientVersion} 的入口结构，没有修改官方文件`);
+  const entry = original.text(info.entry);
+  if (entry.includes(BOOTSTRAP_FILE)) throw Error("客户端已经包含 BTR 入口");
+  original.set(info.entry, withBootstrap(info.entry, entry));
   for (const [key,value] of Object.entries(hooks(bundle))) original.set(hookFile(key),value);
   original.set(BUNDLE_FILE, bundle);
   original.set("btr-desktop/installed.json", JSON.stringify(metadata));
@@ -58,8 +81,7 @@ function run(action, clientPath) {
   const bytes = fs.readFileSync(target), hash = sha(bytes), archive = new Asar(bytes), info = inspect(archive);
   if (action === "status") {
     const bundle = fs.readFileSync(path.join(project, "dist", "desktop.js")), expected = hooks(bundle);
-    const current = !!info.installed && info.installed.payloadSha256 === sha(bundle) && archive.entry(BUNDLE_FILE) && sha(archive.read(BUNDLE_FILE)) === sha(bundle) && archive.text("index.js").startsWith(BOOTSTRAP_PREFIX) && sameHooks(archive, expected) && info.installed.installRoot === project;
-    return { ...info, path: client, sha256: hash, current: !!current, supported: config.supportedClientVersions.includes(info.clientVersion) };
+    return { ...info, path: client, sha256: hash, current: isCurrent(archive, info, sha(bundle), expected), supported: !!info.entry };
   }
   const statePath = path.join(path.dirname(target), "btr-desktop-backups");
   const stateFile = path.join(statePath, path.basename(target) === "app.asar" ? "deployment.json" : `${path.basename(target)}.deployment.json`);
@@ -77,12 +99,12 @@ function run(action, clientPath) {
     return { state: "removed", clientVersion: info.clientVersion, message: "已恢复官方资源，备份和用户设置保留" };
   }
   if (!["install", "repair"].includes(action)) throw Error("未知操作");
-  if (!config.supportedClientVersions.includes(info.clientVersion)) return { state: "unsupported-client", clientVersion: info.clientVersion, message: "客户端已更新到尚未适配的版本，保持官方程序不变" };
+  if (!info.entry) return { state: "unsupported-client", clientVersion: info.clientVersion, message: "无法识别客户端入口结构，保持官方程序不变" };
   const bundle = fs.readFileSync(path.join(project, "dist", "desktop.js"));
   const payload = JSON.parse(fs.readFileSync(path.join(project, "dist", "payload.json")));
   if (sha(bundle) !== payload.sha256) throw Error("BTR 文件校验失败");
   const expected = hooks(bundle);
-  if (info.installed?.payloadSha256 === payload.sha256 && archive.entry(BUNDLE_FILE) && sha(archive.read(BUNDLE_FILE)) === payload.sha256 && archive.text("index.js").startsWith(BOOTSTRAP_PREFIX) && sameHooks(archive, expected) && info.installed.installRoot === project) return { state: "current", clientVersion: info.clientVersion };
+  if (isCurrent(archive, info, payload.sha256, expected)) return { state: "current", clientVersion: info.clientVersion };
   let originalBytes = bytes;
   if (info.installed) {
     const backupHash = info.installed.originalSha256;
@@ -101,7 +123,24 @@ function run(action, clientPath) {
   if (sha(fs.readFileSync(backupPath)) !== originalHash) throw Error("备份内容校验失败");
   replace(target, patched);
   fs.writeFileSync(stateFile, JSON.stringify({ ...metadata, patchedSha256: sha(patched) }, null, 2));
-  return { state: "installed", clientVersion: info.clientVersion, version: config.version, backupPath };
+  return { state: "installed", clientVersion: info.clientVersion, version: config.version, backupPath, removedBackups: pruneBackups(statePath) };
+}
+function isCurrent(archive, info, bundleHash, expected) {
+  return !!(info.installed && info.entry && info.installed.payloadSha256 === bundleHash && archive.entry(BUNDLE_FILE) && sha(archive.read(BUNDLE_FILE)) === bundleHash
+    && hasBootstrap(info.entry, archive.text(info.entry)) && sameHooks(archive, expected) && info.installed.installRoot === project);
+}
+// After an official full reinstall the old original can never be restored onto the new build.
+// Keep only originals that a deployment record still refers to.
+function pruneBackups(statePath) {
+  const kept = new Set(), removed = [];
+  try {
+    for (const name of fs.readdirSync(statePath)) if (name.endsWith("deployment.json")) kept.add(JSON.parse(fs.readFileSync(path.join(statePath, name))).originalSha256);
+    for (const name of fs.readdirSync(statePath)) {
+      const match = /^([a-f0-9]{64})\.asar$/.exec(name);
+      if (match && !kept.has(match[1])) { fs.unlinkSync(path.join(statePath, name)); removed.push(name); }
+    }
+  } catch (_) { /* Installation already succeeded; a leftover backup is harmless. */ }
+  return removed;
 }
 function replace(target, bytes) {
   const temporary = `${target}.btr-${process.pid}.tmp`;

@@ -96,8 +96,9 @@ function register(electron) {
       const launcher = path.join(installed.installRoot,"BTR_Desktop.exe");
       if (!fs.existsSync(launcher) || crypto.createHash("sha256").update(fs.readFileSync(launcher)).digest("hex") !== config.launcherSha256) throw Error("维护程序校验失败，请重新运行一键安装命令");
       const args = remove ? ["uninstall","--client",client] : ["update","--client",client,"--version",result.manifest.version,"--sha256",result.manifest.sha256];
-      // Windows PowerShell can exit 0 without executing its command with DETACHED_PROCESS.
-      // A Windows child survives its parent's exit without that flag; unref releases Node's wait.
+      // Node puts this non-detached child in a job that Windows kills with the client. The
+      // launcher therefore opens the visible window as its own child, which leaves that job,
+      // and waits for it so the exit code below still reports the real result.
       const child = spawn(launcher,args,{detached:false,stdio:"ignore",windowsHide:true,env:environment});
       await new Promise((resolve,reject)=>{child.once("spawn",resolve);child.once("error",reject);});
       started=true; operation=remove?"uninstalling":"installing";
@@ -116,4 +117,22 @@ function register(electron) {
   ipcMain.handle(INSTALL,event=>maintain(event,false));
   ipcMain.handle(REMOVE,event=>maintain(event,true));
 }
-module.exports = {register,trusted};
+// Keeps the per-user guard running, also after an update from a release that had none.
+// The guard registers its startup entry, exits at once if it already runs, and stays off
+// when the user disabled it in Task Manager.
+function startGuard() {
+  const config = JSON.parse(fs.readFileSync(path.join(__dirname, "update-config.json"), "utf8"));
+  const installed = JSON.parse(fs.readFileSync(path.join(__dirname, "installed.json"), "utf8"));
+  if (!config.guardSha256 || !installed.installRoot || !path.isAbsolute(installed.installRoot)) return false;
+  const guard = path.join(installed.installRoot, "BTR_Guard.exe");
+  if (!fs.existsSync(guard) || crypto.createHash("sha256").update(fs.readFileSync(guard)).digest("hex") !== config.guardSha256) return false;
+  const environment = {...process.env};
+  delete environment.ELECTRON_RUN_AS_NODE;
+  // The guard has no console, so the detached flag that broke PowerShell in d1/d2 is safe here.
+  // Detached also keeps it out of the job that closes with the client.
+  const child = spawn(guard, ["guard","--register"], {detached:true,stdio:"ignore",windowsHide:true,env:environment});
+  child.on("error", () => {});
+  child.unref();
+  return true;
+}
+module.exports = {register,trusted,startGuard};

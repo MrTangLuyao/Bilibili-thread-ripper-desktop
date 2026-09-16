@@ -129,6 +129,18 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       return { status: response.status, bytes: (await response.arrayBuffer()).byteLength, fallback: __BTR_DESKTOP__.transport.snapshot().fallbackRequests };
     }); assert.equal(fallback.status, 206); assert.equal(fallback.bytes, 4096); assert.ok(fallback.fallback > 0);
     console.log("PASS failed acceleration returns to original client request without rewriting video source");
+    // A future player that never works with BTR must not pay for a failed attempt on every request.
+    const suspended = await page.evaluate(async () => {
+      const first = __BTR_DESKTOP__.transport.snapshot();
+      for (let i = 0; i < 6; i++) await fetch(`https://upos-sz-mirrorali.bilivideo.com/upgcxcode/fail-${i}.m4s`, { headers: { Range: "bytes=0-4095", "X-Btr-Native-Fallback": "yes" } });
+      const after = __BTR_DESKTOP__.transport.snapshot();
+      const response = await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/native.m4s", { headers: { Range: "bytes=0-4095", "X-Btr-Native-Fallback": "yes" } });
+      const last = __BTR_DESKTOP__.transport.snapshot();
+      return { first: first.suspended, after: after.suspended, status: response.status, bytes: (await response.arrayBuffer()).byteLength, fallbacks: [after.fallbackRequests, last.fallbackRequests], fetches: [after.fetchRequests, last.fetchRequests] };
+    });
+    assert.equal(suspended.first, false); assert.equal(suspended.after, true); assert.equal(suspended.status, 206); assert.equal(suspended.bytes, 4096);
+    assert.equal(suspended.fallbacks[1], suspended.fallbacks[0]); assert.equal(suspended.fetches[1], suspended.fetches[0]);
+    console.log("PASS six failures in a row pause acceleration for the window; later requests go straight to the client");
     assert.deepEqual(errors, []);
     console.log("PASS no browser script errors; CDN requests", requestCount);
   } finally { await browser.close(); server.close(); }

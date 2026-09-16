@@ -16,4 +16,6 @@ function Get-BtrBytes([string]$Url, [int]$Limit) {
     Write-BtrProgress 'download' $bytes.Length $bytes.Length
     return ,$bytes
 }
+# Never register or start a real background guard for a temporary test installation.
+function Start-BtrGuard([string]$InstalledRoot) { }
 Install-BtrDesktop $ClientPath $false

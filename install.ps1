@@ -3,6 +3,7 @@ param(
     [switch]$NoLaunch,
     [switch]$LibraryOnly,
     [switch]$Uninstall,
+    [switch]$Reconnect,
     [string]$PackageRoot = '',
     [switch]$UpdateProgress,
     [switch]$CloseFirst,
@@ -50,7 +51,8 @@ function Get-BtrManifest {
     if ($manifest.schema -ne 1 -or $manifest.version -cnotmatch '^\d+\.\d+\.\d+\.\d+-d[1-9]\d*$' -or $manifest.sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid release manifest.' }
     $expected = 'https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-' + $manifest.version + '.zip'
     if ($manifest.downloadUrl -cne $expected) { throw 'Release package must belong to the BTR Desktop repository.' }
-    if (-not $manifest.supportedClientVersions -or @($manifest.supportedClientVersions | Where-Object { $_ -notmatch '^\d+(\.\d+){2,3}$' }).Count) { throw 'Invalid client compatibility list.' }
+    # supportedClientVersions only serves d1-d4 updaters. d5 checks the client structure instead.
+    if ($null -ne $manifest.supportedClientVersions -and @($manifest.supportedClientVersions | Where-Object { $_ -notmatch '^\d+(\.\d+){2,3}$' }).Count) { throw 'Invalid legacy client list.' }
     return $manifest
 }
 function Find-BtrClient([string]$Requested) {
@@ -106,6 +108,21 @@ function Stop-BtrClient([string]$Folder) {
         Start-Sleep -Milliseconds 500
     }
 }
+function Enter-BtrMaintenance([int]$Attempts = 50) {
+    # The background guard waits while this file is held, so it never asks to reconnect mid-operation.
+    $root = Join-Path $env:LOCALAPPDATA 'BTR_Desktop'
+    [IO.Directory]::CreateDirectory($root) | Out-Null
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try { return [IO.File]::Open((Join-Path $root 'maintenance.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] { if ($i -lt $Attempts) { Start-Sleep -Milliseconds 200 } }
+    }
+    throw 'Another BTR maintenance task is running. Try again later.'
+}
+function Start-BtrGuard([string]$InstalledRoot) {
+    # Registers the per-user startup entry and watches for official full reinstalls.
+    try { Start-Process -FilePath (Join-Path $InstalledRoot 'BTR_Guard.exe') -ArgumentList 'guard','--register' -WorkingDirectory $InstalledRoot | Out-Null }
+    catch { Write-Warning ('BTR is installed, but the background guard did not start: ' + $_.Exception.Message) }
+}
 function Get-BtrShortcutPath { return Join-Path ([Environment]::GetFolderPath('Desktop')) 'BTR Desktop.lnk' }
 function Remove-BtrShortcut([string]$Folder, [string]$InstalledRoot) {
     $shortcutPath = Get-BtrShortcutPath
@@ -120,6 +137,10 @@ function Remove-BtrShortcut([string]$Folder, [string]$InstalledRoot) {
     if ($owned -and $shortcut.Arguments -ceq ('launch --client "' + $Folder + '"')) { Remove-Item -LiteralPath $shortcutPath -Force }
 }
 function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
+    $lock = Enter-BtrMaintenance
+    try { Invoke-BtrInstall $RequestedClient $SkipLaunch } finally { $lock.Dispose() }
+}
+function Invoke-BtrInstall([string]$RequestedClient, [bool]$SkipLaunch) {
     $client = Find-BtrClient $RequestedClient
     if ($CloseFirst) { Write-BtrProgress 'closing'; Stop-BtrClient $client }
     Write-BtrProgress 'manifest'
@@ -143,7 +164,7 @@ function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
         $config = Get-Content -LiteralPath (Join-Path $packageRoot 'desktop.json') -Raw | ConvertFrom-Json
         $payload = Get-Content -LiteralPath (Join-Path $packageRoot 'dist\payload.json') -Raw | ConvertFrom-Json
         if ($config.version -cne $manifest.version -or $payload.version -cne $manifest.version -or (Get-BtrSha ([IO.File]::ReadAllBytes((Join-Path $packageRoot 'dist\desktop.js')))) -ne $payload.sha256) { throw 'Package metadata verification failed.' }
-        foreach ($required in @('BTR_Desktop.exe','install.ps1','tools\client-package.cjs','src\bootstrap.cjs')) { if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $required) -PathType Leaf)) { throw ('Missing package file: ' + $required) } }
+        foreach ($required in @('BTR_Desktop.exe','BTR_Guard.exe','install.ps1','tools\client-package.cjs','src\bootstrap.cjs')) { if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $required) -PathType Leaf)) { throw ('Missing package file: ' + $required) } }
         $versions = Join-Path $root 'versions'; [IO.Directory]::CreateDirectory($versions) | Out-Null
         if ((Get-Item -LiteralPath $versions).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Version directory must not be a link.' }
         # A fresh directory also permits recovery from a damaged installation of the same version.
@@ -153,11 +174,11 @@ function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
         Move-Item -LiteralPath $packageRoot -Destination $destination
         $launcher = Join-Path $destination 'BTR_Desktop.exe'
         Write-BtrProgress 'compatibility'
-        # Read-only compatibility check runs before closing the current video.
+        # Read-only structure check runs before closing the current video. Any client version is accepted.
         $statusText = & $launcher status --client $client --noninteractive
         if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect client.' }
         $status = $statusText | ConvertFrom-Json
-        if (-not $status.supported -or $manifest.supportedClientVersions -notcontains $status.clientVersion) { throw ('Client ' + $status.clientVersion + ' is not supported. Original client was not changed.') }
+        if (-not $status.supported) { throw ('The structure of client ' + $status.clientVersion + ' is not recognized. Original client was not changed.') }
         if (-not $CloseFirst) { Write-BtrProgress 'closing'; Stop-BtrClient $client }
         Write-BtrProgress 'install'
         & $launcher install --client $client --noninteractive
@@ -167,6 +188,7 @@ function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
         if ($LASTEXITCODE -ne 0 -or -not ($statusText | ConvertFrom-Json).current) { throw 'Installed files did not pass verification.' }
         Remove-BtrShortcut $client $destination
         [IO.File]::WriteAllText((Join-Path $root 'current.json'), (@{version=$manifest.version;installPath=$destination;clientPath=$client} | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+        Start-BtrGuard $destination
         Write-Host ('Installed BTR Desktop ' + $manifest.version + '. Open Bilibili normally; no BTR shortcut is created.') -ForegroundColor Green
         if (-not $SkipLaunch) { Write-BtrProgress 'restart'; & $launcher launch --client $client --noninteractive; if ($LASTEXITCODE -ne 0) { throw 'Installed, but client launch failed.' } }
         Write-BtrProgress 'complete'
@@ -175,45 +197,76 @@ function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
         if ($resolvedStage.StartsWith([IO.Path]::GetFullPath($root).TrimEnd('\') + '\stage-', [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedStage)) { Remove-Item -LiteralPath $resolvedStage -Recurse -Force }
     }
 }
-function Remove-BtrDesktop([string]$RequestedClient, [string]$InstalledRoot, [bool]$SkipLaunch) {
-    $client = Find-BtrClient $RequestedClient
+function Get-BtrLauncher([string]$InstalledRoot) {
     if (-not $InstalledRoot -or -not [IO.Path]::IsPathRooted($InstalledRoot)) { throw 'Missing BTR installation directory.' }
     $launcher = Join-Path ([IO.Path]::GetFullPath($InstalledRoot)) 'BTR_Desktop.exe'
     if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'BTR maintenance launcher not found.' }
-    # Validate the deployment and original backup while the current video is still open.
-    Write-BtrProgress 'backup'
-    $checkText = & $launcher check-remove --client $client --noninteractive
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot verify original backup. Client was not closed or changed.' }
-    $check = $checkText | ConvertFrom-Json
-    if ($check.state -notin @('ready-to-remove','not-installed')) { throw 'Unexpected uninstall status.' }
-    Write-BtrProgress 'closing'
-    Stop-BtrClient $client
-    Write-BtrProgress 'restore'
-    & $launcher remove --client $client --noninteractive
-    if ($LASTEXITCODE -ne 0) { throw 'BTR removal failed or Windows permission was cancelled. Backup is preserved.' }
-    Write-BtrProgress 'validate'
-    $statusText = & $launcher status --client $client --noninteractive
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot verify removal.' }
-    $status = $statusText | ConvertFrom-Json
-    if ($status.installed -or ($check.state -eq 'ready-to-remove' -and $status.sha256 -cne $check.originalSha256)) { throw 'Official client restoration did not pass verification.' }
-    # Remove only this installation's shortcut and pointer. Keep backups, source and user data.
-    Write-BtrProgress 'cleanup'
-    Remove-BtrShortcut $client $InstalledRoot
-    $currentPath = Join-Path $env:LOCALAPPDATA 'BTR_Desktop\current.json'
-    if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
-        $current = [IO.File]::ReadAllText($currentPath) | ConvertFrom-Json
-        if ([String]::Equals($current.installPath,[IO.Path]::GetFullPath($InstalledRoot),[StringComparison]::OrdinalIgnoreCase) -and [String]::Equals($current.clientPath,$client,[StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $currentPath -Force }
-    }
-    Write-Host 'BTR removed. Official client restored; account data and settings preserved.' -ForegroundColor Green
-    if (-not $SkipLaunch) {
-        Write-BtrProgress 'restart'
-        $exeName = ([char]0x54d4).ToString() + [char]0x54e9 + [char]0x54d4 + [char]0x54e9 + '.exe'
-        # Start the official EXE directly. The BTR launcher would install the patch again.
-        Start-Process -FilePath (Join-Path $client $exeName) -WorkingDirectory $client -WindowStyle Hidden | Out-Null
-    }
-    Write-BtrProgress 'complete'
+    return $launcher
+}
+function Remove-BtrDesktop([string]$RequestedClient, [string]$InstalledRoot, [bool]$SkipLaunch) {
+    $client = Find-BtrClient $RequestedClient
+    $launcher = Get-BtrLauncher $InstalledRoot
+    $lock = Enter-BtrMaintenance
+    try {
+        # Validate the deployment and original backup while the current video is still open.
+        Write-BtrProgress 'backup'
+        $checkText = & $launcher check-remove --client $client --noninteractive
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot verify original backup. Client was not closed or changed.' }
+        $check = $checkText | ConvertFrom-Json
+        if ($check.state -notin @('ready-to-remove','not-installed')) { throw 'Unexpected uninstall status.' }
+        Write-BtrProgress 'closing'
+        Stop-BtrClient $client
+        Write-BtrProgress 'restore'
+        & $launcher remove --client $client --noninteractive --keep-record
+        if ($LASTEXITCODE -ne 0) { throw 'BTR removal failed or Windows permission was cancelled. Backup is preserved.' }
+        Write-BtrProgress 'validate'
+        $statusText = & $launcher status --client $client --noninteractive
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot verify removal.' }
+        $status = $statusText | ConvertFrom-Json
+        if ($status.installed -or ($check.state -eq 'ready-to-remove' -and $status.sha256 -cne $check.originalSha256)) { throw 'Official client restoration did not pass verification.' }
+        # Remove only this installation's shortcut, pointer and startup entry. The guard exits once
+        # its pointer is gone. Keep backups, source and user data.
+        Write-BtrProgress 'cleanup'
+        Remove-BtrShortcut $client $InstalledRoot
+        & $launcher forget --client $client --noninteractive
+        if ($LASTEXITCODE -ne 0) { throw 'BTR was removed, but its installation record could not be cleared.' }
+        Write-Host 'BTR removed. Official client restored; account data and settings preserved.' -ForegroundColor Green
+        if (-not $SkipLaunch) {
+            Write-BtrProgress 'restart'
+            $exeName = ([char]0x54d4).ToString() + [char]0x54e9 + [char]0x54d4 + [char]0x54e9 + '.exe'
+            # Start the official EXE directly. The BTR launcher would install the patch again.
+            Start-Process -FilePath (Join-Path $client $exeName) -WorkingDirectory $client | Out-Null
+        }
+        Write-BtrProgress 'complete'
+    } finally { $lock.Dispose() }
+}
+function Repair-BtrDesktop([string]$RequestedClient, [string]$InstalledRoot, [bool]$SkipLaunch) {
+    # Used by the guard after an official full installer replaced app.asar. Works offline
+    # from the installed package; a new original backup is taken from the new client.
+    $client = Find-BtrClient $RequestedClient
+    $launcher = Get-BtrLauncher $InstalledRoot
+    $lock = Enter-BtrMaintenance
+    try {
+        Write-BtrProgress 'compatibility'
+        $statusText = & $launcher status --client $client --noninteractive
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect client.' }
+        $status = $statusText | ConvertFrom-Json
+        if (-not $status.supported) { throw ('The structure of client ' + $status.clientVersion + ' is not recognized. Original client was not changed.') }
+        Write-BtrProgress 'closing'
+        Stop-BtrClient $client
+        Write-BtrProgress 'install'
+        & $launcher repair --client $client --noninteractive
+        if ($LASTEXITCODE -ne 0) { throw 'BTR install failed or Windows permission was cancelled.' }
+        Write-BtrProgress 'validate'
+        $statusText = & $launcher status --client $client --noninteractive
+        if ($LASTEXITCODE -ne 0 -or -not ($statusText | ConvertFrom-Json).current) { throw 'Installed files did not pass verification.' }
+        Write-Host ('Reconnected BTR to Bilibili ' + $status.clientVersion + '.') -ForegroundColor Green
+        if (-not $SkipLaunch) { Write-BtrProgress 'restart'; & $launcher launch --client $client --noninteractive; if ($LASTEXITCODE -ne 0) { throw 'Reconnected, but client launch failed.' } }
+        Write-BtrProgress 'complete'
+    } finally { $lock.Dispose() }
 }
 if (-not $LibraryOnly) {
     if ($Uninstall) { Remove-BtrDesktop $ClientPath $PackageRoot ([bool]$NoLaunch) }
+    elseif ($Reconnect) { Repair-BtrDesktop $ClientPath $PackageRoot ([bool]$NoLaunch) }
     else { Install-BtrDesktop $ClientPath ([bool]$NoLaunch) }
 }
