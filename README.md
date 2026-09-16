@@ -7,7 +7,9 @@
 ## 安装
 
 1 先安装好官方哔哩哔哩 Windows 客户端
+
 2 右键左下角Windows徽标 选择终端 (Windows11) 或 Powershell (Windows11以前或无终端版版) **不要用管理员身份运行**
+
 3 运行下面的脚本
 
 ```powershell
