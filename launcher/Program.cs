@@ -87,17 +87,17 @@ internal static class Program {
     private static int Main(string[] args) {
         Console.OutputEncoding = Encoding.UTF8;
         try {
-            if (args.Contains("--help")) { Console.WriteLine("BTR_Desktop.exe [launch|install|repair|remove|status|check-update] [--client 安装目录]\n不带参数会检查接入状态，然后启动官方客户端。install 和 remove 需要先完全退出客户端。"); return 0; }
+            if (args.Contains("--help")) { Console.WriteLine("BTR_Desktop.exe [launch|install|repair|remove|uninstall|status|check-update] [--client 安装目录]\n不带参数会检查接入状态，然后启动官方客户端。install 和 remove 需要先完全退出客户端。uninstall 显示独立卸载进度并重新打开官方客户端。"); return 0; }
             string folder = Client(args);
             if (args.Length > 0 && args[0] == "--apply") {
                 if (!Admin() || args.Length < 2 || !new[] {"install", "repair", "remove"}.Contains(args[1])) throw new Exception("无效的安装操作。");
                 RequireClosed(folder); Console.WriteLine(Json.Serialize(RunNode(folder, args[1]))); return 0;
             }
             string action = args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "launch";
-            if (action == "update") {
-                if (Admin()) throw new Exception("请用普通权限运行更新程序，只有安装文件时才请求管理员授权。");
+            if (action == "update" || action == "uninstall") {
+                if (Admin()) throw new Exception("请用普通权限运行维护程序，只有修改客户端文件时才请求管理员授权。");
                 Application.EnableVisualStyles();
-                using (var window = new UpdateWindow(Root, folder, args)) { Application.Run(window); return window.Result; }
+                using (var window = new UpdateWindow(Root, folder, args, action == "uninstall")) { Application.Run(window); return window.Result; }
             }
             if (action == "status" || action == "check-update" || action == "check-remove") { Console.WriteLine(Json.Serialize(RunNode(folder, action))); return 0; }
             if (new[] {"install", "repair", "remove"}.Contains(action)) { Apply(folder, action); return 0; }

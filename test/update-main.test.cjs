@@ -1,20 +1,20 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm"),crypto=require("node:crypto"),{EventEmitter}=require("node:events");
 const source=fs.readFileSync(path.join(__dirname,"../src/update-main.cjs"),"utf8");
-function setup({response=0,tampered=false,unavailable=false,offline=false}={}) {
+function setup({response=0,tampered=false,launcherTampered=false,spawnError=false,unavailable=false,offline=false}={}) {
   const handlers={},calls=[],script=Buffer.from("# verified installer"),root=path.resolve("C:/BTR user's files");
   const config={version:"0.9.1.1-d3",update:{enabled:true},installerSha256:crypto.createHash("sha256").update(script).digest("hex"),launcherSha256:crypto.createHash("sha256").update(script).digest("hex")};
   let now=10000, nextTimer=0; const timers=new Map();
   let requests=0;
   const event={sender:{isDestroyed:()=>false,send:(channel,result)=>calls.push({channel,result})},senderFrame:{url:"https://bilipc.bilibili.com/index.html#/settings"}};event.sender.mainFrame=event.senderFrame;
-  const fakeFs={existsSync:()=>true,readFileSync:file=>file.endsWith("update-config.json")?JSON.stringify(config):file.endsWith("installed.json")?JSON.stringify({installRoot:root}):tampered?Buffer.from("changed"):script};
+  const fakeFs={existsSync:()=>true,readFileSync:file=>file.endsWith("update-config.json")?JSON.stringify(config):file.endsWith("installed.json")?JSON.stringify({installRoot:root}):(tampered || (launcherTampered && file.endsWith("BTR_Desktop.exe")))?Buffer.from("changed"):script};
   const check=async()=>{requests++;if(offline)throw Error("offline");return {state:unavailable?"current":"available",manifest:{version:"0.9.1.1-d4",sha256:"a".repeat(64)}};};
   const child=new EventEmitter();child.unref=()=>calls.push({unref:true});
   const module={exports:{}};
   vm.runInNewContext(source,{module,URL,Buffer,Date:{now:()=>now},setTimeout:(fn,delay)=>{const id=++nextTimer;timers.set(id,{fn,at:now+delay});return id;},clearTimeout:id=>timers.delete(id),__dirname:path.resolve("C:/app.asar/btr-desktop"),process:{execPath:"C:\\Program Files\\bilibili\\client.exe",env:{SystemRoot:"C:\\Windows",PSModulePath:"foreign",ELECTRON_RUN_AS_NODE:"1"}},require:name=>{
     if(name==="fs")return fakeFs;
     if(name==="./update-provider.cjs")return {check};
-    if(name==="child_process")return {spawn:(exe,args,options)=>{calls.push({exe,args,options});queueMicrotask(()=>child.emit("spawn"));return child;}};
+    if(name==="child_process")return {spawn:(exe,args,options)=>{calls.push({exe,args,options});queueMicrotask(()=>spawnError?child.emit("error",Error("maintenance start failed")):child.emit("spawn"));return child;}};
     return require(name);
   }});
   module.exports.register({ipcMain:{handle:(name,fn)=>handlers[name]=fn},BrowserWindow:{fromWebContents:()=>null},dialog:{showMessageBox:async options=>{calls.push({dialog:options});return {response};}}});
@@ -45,11 +45,12 @@ test("uninstall works offline, requires confirmation and shares the update lock"
   const dialog=cancelled.calls.find(x=>x.dialog).dialog;assert.equal(dialog.title,"卸载 BTR");assert.equal(dialog.defaultId,1);assert.equal(dialog.cancelId,1);
   const damaged=setup({tampered:true});assert.equal((await damaged.remove(damaged.event)).state,"error");assert.equal(damaged.calls.filter(x=>x.exe).length,0);
   const s=setup({offline:true});assert.equal((await s.remove(s.event)).state,"uninstalling");assert.equal(s.requests(),0);
-  const call=s.calls.find(x=>x.exe),command=Buffer.from(call.args.at(-1),"base64").toString("utf16le");assert.match(command,/-Uninstall -PackageRoot 'C:\\BTR user''s files'/);assert.doesNotMatch(command,/https:|ExecutionPolicy/);
+  const call=s.calls.find(x=>x.exe);assert.match(call.exe,/BTR user's files\\BTR_Desktop.exe$/);assert.deepEqual(Array.from(call.args),["uninstall","--client","C:\\Program Files\\bilibili"]);
   assert.equal((await s.install(s.event)).state,"uninstalling");assert.equal((await s.remove(s.event)).state,"uninstalling");assert.equal((await s.check(s.event)).state,"uninstalling");assert.equal(s.calls.filter(x=>x.exe).length,1);
   assert.equal(call.options.detached,false);
   s.child.emit("exit",1);assert.equal(s.calls.filter(x=>x.channel==="btr-desktop:maintenance-result").at(-1).result.state,"error");
   assert.equal((await s.remove(s.event)).state,"uninstalling");assert.equal(s.calls.filter(x=>x.exe).length,2);
+  s.child.emit("exit",0);assert.equal(s.calls.filter(x=>x.channel==="btr-desktop:maintenance-result").at(-1).result.state,"idle");
 });
 
 test("one startup scheduler across windows, cancel waits 30 minutes, toggle stops checks",async()=>{
@@ -66,6 +67,16 @@ test("one startup scheduler across windows, cancel waits 30 minutes, toggle stop
   await s.advance(1800000);assert.equal(s.requests(),2);
   await s.check(s.event);assert.equal(s.requests(),3);
   s.configure(s.event,{enabled:true,changed:true});await s.advance(1500);assert.equal(s.calls.filter(x=>x.dialog).length,3);
+});
+
+test("uninstall rejects a changed launcher and releases the lock when starting fails",async()=>{
+  const tampered=setup({launcherTampered:true,offline:true});
+  assert.equal((await tampered.remove(tampered.event)).state,"error");assert.equal(tampered.calls.filter(x=>x.exe).length,0);
+  const failed=setup({spawnError:true,offline:true});
+  for(let i=0;i<2;i++) {
+    const result=await failed.remove(failed.event);assert.equal(result.state,"error");assert.match(result.message,/maintenance start failed/);
+  }
+  assert.equal(failed.calls.filter(x=>x.dialog).length,2);assert.equal(failed.requests(),0);
 });
 
 test("automatic offline checks stay quiet and retry, startup off does not fetch",async()=>{

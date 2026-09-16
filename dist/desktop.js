@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d3","adapterRevision":3};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d4","adapterRevision":4};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -1247,8 +1247,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d3","adapterRevision":3};
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d3",
-    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 3,
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d4",
+    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 4,
     categories,
     getSettings: () => ({ ...current, debugCategories: { ...current.debugCategories } }),
     setSettings(patch) {

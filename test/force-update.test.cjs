@@ -8,7 +8,7 @@ test("force update runs through Windows PowerShell IEX without using the install
   const result=spawnSync("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",["-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(command,"utf16le").toString("base64")],{encoding:"utf8",windowsHide:true,detached:false,timeout:15000});
   assert.equal(result.status,0,result.stdout+result.stderr);assert.match(result.stdout,/PASS force-update/);
 });
-test("d3 package includes the force-update script next to the installer",{skip:process.platform!=="win32"},()=>{
+test("release package includes the force-update script next to the installer",{skip:process.platform!=="win32"},()=>{
   const manifest=JSON.parse(fs.readFileSync(path.join(root,"latest.json"))),archive=path.join(root,"packages",`BTR_Desktop-${manifest.version}.zip`);
   assert.equal(sha(fs.readFileSync(archive)),manifest.sha256);
   for(const file of ["force-update.ps1","install.ps1"]){

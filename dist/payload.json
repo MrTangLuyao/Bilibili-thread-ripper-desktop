@@ -1,14 +1,14 @@
 {
-  "version": "0.9.1.1-d3",
-  "adapterRevision": 3,
-  "sha256": "727dc96b2fc51eaa0c4c9a07e511b24a21fd59fc083b5f415e982d4f482c5fde",
+  "version": "0.9.1.1-d4",
+  "adapterRevision": 4,
+  "sha256": "73d707a4b426ffbee97828b6b6982adeab29193b7e9cc483ef12cc29e0e3bbd4",
   "files": {
     "shared/range-core.js": "2d734b03b40ac17fa34ca3c677eb4f6669146e3411d276153f05140ef0d538a2",
     "shared/cdn-resolver.js": "6a987b942f9ad1d15af502650c5993ee67c8114cda42758eff58a2ffe1ab0088",
     "shared/idm-downloader.js": "530afaa708dd3a2f61c0d008c315489408a4348cc5b29f586a2befbfd4f26849",
     "shared/runtime-notices.js": "d44f186655aaa364f1e9f7b99bbd19a48fb3a7b7015e665bc31abc73dc938d55",
     "shared/notification-view.js": "39bb1d1d3ae35449c32388e15765fbac7524a1fc85368c042473f0e2c8b4dbb4",
-    "src/settings.js": "a52b983418d7aadb4be19a005da24d70e1a4ff28b6dd3bd92b3cab5b012b1f5e",
+    "src/settings.js": "69e9e3a31d842d476b79e528b07e426c59e1247ac32b8746718d652a5f40c193",
     "src/transport.js": "915530ddd96a8ba38f741ed3839cd363d0170a3061244a1b5b419ca69d0d5fb0",
     "src/client.js": "d385d62a85dcb2c62c368095c3ce22ed11a2ac3c1e36b4e1cf9fea68e8c93a41",
     "src/updates.js": "4be36c1110458d8edd04d2429b614f6f0190c23ed28c70586ac0c47edad541b2",

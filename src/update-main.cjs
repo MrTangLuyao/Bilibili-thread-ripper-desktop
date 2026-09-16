@@ -89,30 +89,27 @@ function register(electron) {
       const script = path.resolve(installed.installRoot, "install.ps1");
       if (!fs.existsSync(script)) throw Error("找不到维护脚本，请重新运行 README 中的一键安装命令");
       if (crypto.createHash("sha256").update(fs.readFileSync(script)).digest("hex") !== config.installerSha256) throw Error("维护脚本校验失败，请重新安装 BTR");
-      const quote = value => "'" + value.replace(/'/g,"''") + "'";
       const client = path.dirname(process.execPath);
-      const flags = remove ? ` -Uninstall -PackageRoot ${quote(installed.installRoot)}` : "";
-      const command = `try { & ([ScriptBlock]::Create([IO.File]::ReadAllText(${quote(script)}))) -ClientPath ${quote(client)}${flags} } catch { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'BTR operation failed') | Out-Null; exit 1 }`;
       const environment = {...process.env};
       delete environment.PSModulePath;
       delete environment.ELECTRON_RUN_AS_NODE;
       const launcher = path.join(installed.installRoot,"BTR_Desktop.exe");
-      if (!remove && crypto.createHash("sha256").update(fs.readFileSync(launcher)).digest("hex") !== config.launcherSha256) throw Error("更新程序校验失败，请重新运行一键安装命令");
-      const executable = remove ? path.join(process.env.SystemRoot,"System32","WindowsPowerShell","v1.0","powershell.exe") : launcher;
-      const args = remove ? ["-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(command,"utf16le").toString("base64")] : ["update","--client",client,"--version",result.manifest.version,"--sha256",result.manifest.sha256];
+      if (!fs.existsSync(launcher) || crypto.createHash("sha256").update(fs.readFileSync(launcher)).digest("hex") !== config.launcherSha256) throw Error("维护程序校验失败，请重新运行一键安装命令");
+      const args = remove ? ["uninstall","--client",client] : ["update","--client",client,"--version",result.manifest.version,"--sha256",result.manifest.sha256];
       // Windows PowerShell can exit 0 without executing its command with DETACHED_PROCESS.
       // A Windows child survives its parent's exit without that flag; unref releases Node's wait.
-      const child = spawn(executable,args,{detached:false,stdio:"ignore",windowsHide:true,env:environment});
+      const child = spawn(launcher,args,{detached:false,stdio:"ignore",windowsHide:true,env:environment});
       await new Promise((resolve,reject)=>{child.once("spawn",resolve);child.once("error",reject);});
       started=true; operation=remove?"uninstalling":"installing";
       child.once("exit",code=>{
         operation="";
-        if (code !== 0) {
-          try { if (!event.sender.isDestroyed()) event.sender.send("btr-desktop:maintenance-result",{state:"error",message:remove?"卸载未完成，请查看错误提示后重试":"更新未完成，请查看错误提示后重试"}); } catch (_) {}
-        }
+        // Always release renderer buttons, including an unexpected zero exit.
+        try { publish(code !== 0
+          ? {state:"error",message:remove?"卸载未完成，请查看卸载窗口中的错误和日志后重试":"更新未完成，请查看更新窗口中的错误和日志后重试"}
+          : {state:"idle",message:remove?"卸载程序已结束，请以卸载窗口的验证结果为准":"更新程序已结束，请以更新窗口的验证结果为准"}); } catch (_) {}
       });
       child.unref();
-      return publish({state:operation,message:remove?"正在卸载 BTR，完成后会重新打开官方客户端":"已打开 BTR 更新进度窗口"});
+      return publish({state:operation,message:remove?"已打开 BTR 卸载进度窗口":"已打开 BTR 更新进度窗口"});
     } catch (error) { return publish({state:"error",message:String(error.message).slice(0,200)}); }
     finally { if(!started)operation=""; }
   }

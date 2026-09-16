@@ -7,8 +7,8 @@
 ```json
 {
   "schema": 1,
-  "version": "0.9.1.1-d3",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.1-d3.zip",
+  "version": "0.9.1.1-d4",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.1-d4.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }
@@ -34,7 +34,9 @@ d2 不再创建 BTR 桌面快捷方式，安装后正常启动官方客户端即
 
 从 d2 起，“检查 BTR 更新”右侧有红色“卸载 BTR”按钮。只有真实点击能触发预加载入口的卸载请求，主进程再次确认，默认选中取消。更新和卸载共用操作锁，不能同时执行。
 
-确认后运行本地已校验的 install.ps1，使用固定的 `-Uninstall`、`-PackageRoot` 和 `-ClientPath` 参数，不读取远程清单。独立进程先验证部署记录和原始备份，再关闭客户端并还原。还原后的哈希与备份一致才算成功，之后移除属于本次安装的快捷方式和 current.json，直接启动官方 EXE，不通过会自动修复 BTR 的启动器。保留原始备份、本地安装文件和账号数据。
+从 d4 起，确认后同时校验本地维护脚本和启动器，启动 `BTR_Desktop.exe uninstall --client <客户端目录>` 独立窗口。它用带输出捕获的 PowerShell 执行本地 install.ps1，使用固定的 `-Uninstall`、`-PackageRoot` 和 `-ClientPath` 参数，不读取远程清单。独立进程先验证部署记录和原始备份，再关闭客户端并还原。还原后的哈希与备份一致才算成功，之后移除属于本次安装的快捷方式和 current.json，直接启动官方 EXE，不通过会自动修复 BTR 的启动器。保留原始备份、本地安装文件和账号数据。
+
+卸载窗口显示各阶段进度，只有脚本发出完成消息且退出码为 0 才显示成功；失败停留并提供 `uninstall-*.log`。主进程在维护程序退出后通知所有仍打开的设置窗口恢复按钮，即使程序返回 0 也不会遗留忙碌状态。卸载异常不再只依赖隐藏 PowerShell 里的 MessageBox。
 
 ## 发下一版
 

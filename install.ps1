@@ -181,18 +181,23 @@ function Remove-BtrDesktop([string]$RequestedClient, [string]$InstalledRoot, [bo
     $launcher = Join-Path ([IO.Path]::GetFullPath($InstalledRoot)) 'BTR_Desktop.exe'
     if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'BTR maintenance launcher not found.' }
     # Validate the deployment and original backup while the current video is still open.
+    Write-BtrProgress 'backup'
     $checkText = & $launcher check-remove --client $client --noninteractive
     if ($LASTEXITCODE -ne 0) { throw 'Cannot verify original backup. Client was not closed or changed.' }
     $check = $checkText | ConvertFrom-Json
     if ($check.state -notin @('ready-to-remove','not-installed')) { throw 'Unexpected uninstall status.' }
+    Write-BtrProgress 'closing'
     Stop-BtrClient $client
+    Write-BtrProgress 'restore'
     & $launcher remove --client $client --noninteractive
     if ($LASTEXITCODE -ne 0) { throw 'BTR removal failed or Windows permission was cancelled. Backup is preserved.' }
+    Write-BtrProgress 'validate'
     $statusText = & $launcher status --client $client --noninteractive
     if ($LASTEXITCODE -ne 0) { throw 'Cannot verify removal.' }
     $status = $statusText | ConvertFrom-Json
     if ($status.installed -or ($check.state -eq 'ready-to-remove' -and $status.sha256 -cne $check.originalSha256)) { throw 'Official client restoration did not pass verification.' }
     # Remove only this installation's shortcut and pointer. Keep backups, source and user data.
+    Write-BtrProgress 'cleanup'
     Remove-BtrShortcut $client $InstalledRoot
     $currentPath = Join-Path $env:LOCALAPPDATA 'BTR_Desktop\current.json'
     if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
@@ -201,10 +206,12 @@ function Remove-BtrDesktop([string]$RequestedClient, [string]$InstalledRoot, [bo
     }
     Write-Host 'BTR removed. Official client restored; account data and settings preserved.' -ForegroundColor Green
     if (-not $SkipLaunch) {
+        Write-BtrProgress 'restart'
         $exeName = ([char]0x54d4).ToString() + [char]0x54e9 + [char]0x54d4 + [char]0x54e9 + '.exe'
         # Start the official EXE directly. The BTR launcher would install the patch again.
         Start-Process -FilePath (Join-Path $client $exeName) -WorkingDirectory $client -WindowStyle Hidden | Out-Null
     }
+    Write-BtrProgress 'complete'
 }
 if (-not $LibraryOnly) {
     if ($Uninstall) { Remove-BtrDesktop $ClientPath $PackageRoot ([bool]$NoLaunch) }
