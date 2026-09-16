@@ -25,6 +25,13 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     await page.goto(origin); await page.locator("#btr-desktop-settings").waitFor();
     assert.equal(await page.locator(".settings_catalog button").first().textContent(), "线程撕裂者");
     assert.equal(await page.locator("#btr-desktop-settings + .theme-item").count(), 1);
+    assert.equal(await page.locator("#btr-desktop-check-update + #btr-desktop-uninstall").textContent(), "卸载 BTR");
+    const buttons = await page.evaluate(() => {
+      const check=document.querySelector('#btr-desktop-check-update'),remove=document.querySelector('#btr-desktop-uninstall');
+      const a=check.getBoundingClientRect(),b=remove.getBoundingClientRect();
+      return {after:b.left>a.right,sameRow:Math.abs(a.top-b.top)<1,color:getComputedStyle(remove).backgroundColor};
+    });
+    assert.deepEqual(buttons,{after:true,sameRow:true,color:"rgb(185, 56, 67)"});
     assert.equal(await page.locator("[data-setting=errorNotices]").isChecked(), true);
     await page.locator("[data-setting=debugNotices]").check();
     assert.equal(await page.locator("[data-category]:checked").count(), 6);
@@ -63,6 +70,18 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"current",message:"当前已是最新版本"}},location.origin));
     await page.waitForFunction(() => document.querySelector('.btr-update-status').textContent === '当前已是最新版本');
     console.log("PASS update states: available, checking, error retry and current version");
+    for (const state of ["confirming","uninstalling"]) {
+      await page.evaluate(state => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state,message:"卸载测试"}},location.origin),state);
+      await page.waitForFunction(() => document.querySelector('#btr-desktop-uninstall').disabled);
+      assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),true);
+      assert.equal(await page.locator("#btr-desktop-install-update").isVisible(),false);
+    }
+    await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"idle",message:"已取消卸载 BTR"}},location.origin));
+    await page.waitForFunction(() => !document.querySelector('#btr-desktop-uninstall').disabled);
+    assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),false);
+    const images=path.join(root,"test-output");fs.mkdirSync(images,{recursive:true});
+    await page.locator("#btr-desktop-settings").screenshot({path:path.join(images,"d2-settings.png")});
+    console.log("PASS red uninstall button is immediately right of check update; confirmation and uninstall lock controls, cancellation restores them");
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({ debugNotices: false }));
     const fetchResult = await page.evaluate(async () => {
       const response = await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/a.m4s", { headers: { Range: "bytes=0-1048575" } });

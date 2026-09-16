@@ -39,14 +39,16 @@ test("isolated preload bridges checks but only real user clicks can request inst
   function runPreload(isMainFrame=true,origin="https://bilipc.bilibili.com") {
     const events={},calls=[],messages=[],scripts=[],window={addEventListener:(type,fn)=>events[type]=fn,postMessage:value=>messages.push(value)};
     const document={documentElement:{},head:{appendChild:script=>scripts.push(script.textContent)},addEventListener:(type,fn)=>events[type]=fn,createElement:()=>({remove(){}})};
-    vm.runInNewContext(code,{process:{isMainFrame},location:{origin,pathname:"/index.html"},window,document,MutationObserver:class{observe(){}disconnect(){}},require:()=>({ipcRenderer:{invoke:async name=>{calls.push(name);return {state:"current"};}}})});
+    vm.runInNewContext(code,{process:{isMainFrame},location:{origin,pathname:"/index.html"},window,document,MutationObserver:class{observe(){}disconnect(){}},require:()=>({ipcRenderer:{on(){},invoke:async name=>{calls.push(name);return {state:"current"};}}})});
     return {events,calls,messages,scripts,window};
   }
   const s=runPreload();assert.deepEqual(s.scripts,["window.BTR=true"]);
   await s.events.message({source:s.window,data:{channel:"__BTR_DESKTOP_UPDATE__",type:"check"}});
-  const target={closest:()=>true};await s.events.click({isTrusted:false,target});assert.deepEqual(s.calls,["btr-desktop:update-check"]);
+  const target={closest:()=>({id:"btr-desktop-install-update"})};await s.events.click({isTrusted:false,target});assert.deepEqual(s.calls,["btr-desktop:update-check"]);
   await s.events.click({isTrusted:true,target});assert.deepEqual(s.calls,["btr-desktop:update-check","btr-desktop:update-install"]);
-  assert.equal(s.messages.length,2);assert.equal(runPreload(false).scripts.length,0);assert.equal(runPreload(true,"https://evil.test").scripts.length,0);
+  const removeTarget={closest:()=>({id:"btr-desktop-uninstall"})};await s.events.click({isTrusted:false,target:removeTarget});assert.equal(s.calls.length,2);
+  await s.events.click({isTrusted:true,target:removeTarget});assert.equal(s.calls.at(-1),"btr-desktop:uninstall");
+  assert.equal(s.messages.length,5);assert.equal(runPreload(false).scripts.length,0);assert.equal(runPreload(true,"https://evil.test").scripts.length,0);
 });
 test("installation repair survives an official overwrite and removal restores exact bytes", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "btr-install-test-"));
@@ -66,6 +68,14 @@ test("installation repair survives an official overwrite and removal restores ex
     fs.writeFileSync(target, original); // The official updater replaces the supported build.
     assert.equal(run("status", dir).current, false);
     assert.equal(run("repair", dir).state, "installed");
+    const beforeRemoval=fs.readFileSync(target);
+    assert.equal(run("check-remove", dir).state, "ready-to-remove");
+    assert.deepEqual(fs.readFileSync(target),beforeRemoval);
+    const record=JSON.parse(fs.readFileSync(path.join(dir,"resources/btr-desktop-backups/deployment.json")));
+    const backup=path.join(dir,"resources/btr-desktop-backups",record.originalSha256+".asar");
+    fs.writeFileSync(backup,Buffer.from("damaged"));
+    assert.throws(()=>run("check-remove",dir));assert.throws(()=>run("remove",dir));assert.deepEqual(fs.readFileSync(target),beforeRemoval);
+    fs.writeFileSync(backup,original);
     assert.equal(run("remove", dir).state, "removed");
     assert.deepEqual(fs.readFileSync(target), original);
     const unknown = new Asar(original); unknown.set("package.json", '{"name":"bilibili","version":"99.0.0"}');
@@ -73,6 +83,7 @@ test("installation repair survives an official overwrite and removal restores ex
     assert.equal(run("repair", dir).state, "unsupported-client");
     assert.deepEqual(fs.readFileSync(target), updated);
     assert.equal(run("remove", dir).state, "not-installed");
+    assert.equal(run("check-remove", dir).state, "not-installed");
     assert.deepEqual(fs.readFileSync(target), updated);
   } finally { fs.rmSync(dir, {recursive:true}); }
 });

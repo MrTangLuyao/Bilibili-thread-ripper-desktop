@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d2","adapterRevision":2};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -1247,8 +1247,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d1","adapterRevision":1};
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d1",
-    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d2",
+    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 2,
     categories,
     getSettings: () => ({ ...current, debugCategories: { ...current.debugCategories } }),
     setSettings(patch) {
@@ -1573,6 +1573,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d1","adapterRevision":1};
   api.getUpdate=()=>({...state});
   api.onUpdate=fn=>{listeners.add(fn);fn({...state});return()=>listeners.delete(fn);};
   api.checkUpdate=()=>{
+    if(["confirming","installing","uninstalling"].includes(state.state))return Promise.resolve({...state});
     if(pending)return pending;
     emit({state:"checking",message:"正在检查 BTR 更新"});
     pending=new Promise(resolve=>{
@@ -1586,7 +1587,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d1","adapterRevision":1};
   root.addEventListener("message",event=>{
     if(event.source!==root || event.data?.channel!==channel || event.data.type!=="result")return;
     const value=event.data.result;
-    if(!value || !["current","available","checking","installing","error","not-configured"].includes(value.state))return;
+    if(!value || !["current","available","checking","confirming","installing","uninstalling","idle","error","not-configured"].includes(value.state))return;
     finish(value);
   });
 })(globalThis);
@@ -1605,6 +1606,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d1","adapterRevision":1};
     #btr-desktop-settings .btr-label{min-width:132px;color:var(--text2,#b3bfca)}
     #btr-desktop-settings button,#btr-desktop-settings select{border:1px solid var(--line_regular,#353638);border-radius:5px;background:var(--bg3,#252729);color:inherit;padding:7px 15px;font:inherit;cursor:pointer}
     #btr-desktop-settings button[aria-pressed=true]{background:#bf4d7b;border-color:#bf4d7b;color:#fff}
+    #btr-desktop-settings #btr-desktop-uninstall{background:#b93843;border-color:#d14c57;color:#fff}
+    #btr-desktop-settings #btr-desktop-uninstall:hover:not(:disabled){background:#d04450}
+    #btr-desktop-settings button:disabled{opacity:.55;cursor:default}
     #btr-desktop-settings input{accent-color:#d45b88}#btr-desktop-settings input[type=checkbox]{width:16px;height:16px;vertical-align:middle;margin:0 8px 0 0}
     #btr-desktop-settings input[type=range]{width:min(290px,55vw)}#btr-desktop-settings output{min-width:35px;color:#ef77a3;font-weight:600}
     #btr-desktop-settings .btr-debug-options{display:grid;grid-template-columns:repeat(2,minmax(145px,1fr));gap:12px;max-width:440px;padding:12px 0 6px}
@@ -1627,7 +1631,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d1","adapterRevision":1};
         <div class="btr-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="errorNotices">显示错误</label><label><input type="checkbox" data-setting="debugNotices">Debug 模式</label></div>
         <div class="btr-debug-wrap" hidden><div class="btr-row"><button type="button" data-select="all">全选</button><button type="button" data-select="none">全不选</button></div><div class="btr-debug-options"></div></div>
-        <div class="btr-row"><button type="button" id="btr-desktop-check-update">检查 BTR 更新</button><button type="button" id="btr-desktop-install-update" hidden>安装更新</button></div>
+        <div class="btr-row"><button type="button" id="btr-desktop-check-update">检查 BTR 更新</button><button type="button" id="btr-desktop-uninstall">卸载 BTR</button><button type="button" id="btr-desktop-install-update" hidden>安装更新</button></div>
         <div class="btr-note btr-update-status" role="status"></div><div class="btr-note btr-save-error" role="status"></div>`;
       for (const [key, title] of Object.entries(api.categories)) {
         const label = document.createElement("label"), input = document.createElement("input");
@@ -1662,7 +1666,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d1","adapterRevision":1};
       });
       unsubscribeUpdate = api.onUpdate(update => {
         panel.querySelector(".btr-update-status").textContent = update.message;
-        panel.querySelector("#btr-desktop-check-update").disabled = ["checking","installing"].includes(update.state);
+        const busy = ["confirming","installing","uninstalling"].includes(update.state);
+        panel.querySelector("#btr-desktop-check-update").disabled = busy || update.state === "checking";
+        panel.querySelector("#btr-desktop-uninstall").disabled = busy;
         const install = panel.querySelector("#btr-desktop-install-update");
         install.hidden = update.state !== "available";
         install.textContent = update.manifest ? `更新到 ${update.manifest.version}` : "安装更新";

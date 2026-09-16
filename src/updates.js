@@ -6,6 +6,7 @@
   api.getUpdate=()=>({...state});
   api.onUpdate=fn=>{listeners.add(fn);fn({...state});return()=>listeners.delete(fn);};
   api.checkUpdate=()=>{
+    if(["confirming","installing","uninstalling"].includes(state.state))return Promise.resolve({...state});
     if(pending)return pending;
     emit({state:"checking",message:"正在检查 BTR 更新"});
     pending=new Promise(resolve=>{
@@ -19,7 +20,7 @@
   root.addEventListener("message",event=>{
     if(event.source!==root || event.data?.channel!==channel || event.data.type!=="result")return;
     const value=event.data.result;
-    if(!value || !["current","available","checking","installing","error","not-configured"].includes(value.state))return;
+    if(!value || !["current","available","checking","confirming","installing","uninstalling","idle","error","not-configured"].includes(value.state))return;
     finish(value);
   });
 })(globalThis);

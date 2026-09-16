@@ -4,7 +4,11 @@ using System.Linq;
 class Fixture {
     static int Main(string[] args) {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
-        if (args.Length == 0) return 0;
+        if (args.Length == 0) {
+            var marker = Environment.GetEnvironmentVariable("BTR_TEST_LAUNCH_MARKER");
+            if (!String.IsNullOrEmpty(marker)) System.IO.File.WriteAllText(marker, "official-client-started");
+            return 0;
+        }
         var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("BTR_TEST_NODE"), String.Join(" ", args.Select(x => "\"" + x.Replace("\"", "\\\"") + "\"")));
         start.UseShellExecute = false; start.CreateNoWindow = true;
         start.RedirectStandardOutput = true; start.RedirectStandardError = true;

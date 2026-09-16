@@ -7,8 +7,8 @@
 ```json
 {
   "schema": 1,
-  "version": "0.9.1.1-d1",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.1-d1.zip",
+  "version": "0.9.1.1-d2",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.1-d2.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }
@@ -19,6 +19,14 @@
 下载仅允许本仓库的 HTTPS raw 地址，拒绝跳转和任意外部地址。清单限制 64 KiB，安装包限制 16 MiB，解压后限制 24 MiB。校验包 SHA-256、版本和内部播放器脚本哈希，拒绝越界解压路径。SHA-256 用于检测损坏和文件不一致，不是独立签名；更新信任 GitHub HTTPS 和仓库维护者，因此不要执行陌生人提供的同名安装命令。
 
 更新不依赖配置迁移。不主动清理 Bilibili 账号或官方客户端数据，现有 BTR 设置能继续读取时会保留，但更新不承诺迁移任何旧格式。
+
+d2 不再创建 BTR 桌面快捷方式，安装后正常启动官方客户端即可。安装和卸载时仅清理属于该客户端的旧 BTR 快捷方式，不改其他快捷方式。如果官方更新覆盖接入，重新执行安装命令恢复，不再依赖单独的快捷方式自动修复。
+
+## 本地卸载
+
+从 d2 起，“检查 BTR 更新”右侧有红色“卸载 BTR”按钮。只有真实点击能触发预加载入口的卸载请求，主进程再次确认，默认选中取消。更新和卸载共用操作锁，不能同时执行。
+
+确认后运行本地已校验的 install.ps1，使用固定的 `-Uninstall`、`-PackageRoot` 和 `-ClientPath` 参数，不读取远程清单。独立进程先验证部署记录和原始备份，再关闭客户端并还原。还原后的哈希与备份一致才算成功，之后移除属于本次安装的快捷方式和 current.json，直接启动官方 EXE，不通过会自动修复 BTR 的启动器。保留原始备份、本地安装文件和账号数据。
 
 ## 发下一版
 

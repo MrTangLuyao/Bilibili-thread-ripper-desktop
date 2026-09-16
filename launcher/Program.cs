@@ -67,6 +67,22 @@ internal static class Program {
         var supported = (System.Collections.ArrayList)config["supportedClientVersions"];
         return supported.Contains(File.ReadAllText(version, Encoding.UTF8).Trim());
     }
+    private static void RemoveLegacyShortcut(string folder, string launcher, string shortcutPath) {
+        // d1's already-installed updater creates a shortcut after applying the new package.
+        // Remove that exact shortcut before launching, even when the old updater was used.
+        if (!File.Exists(shortcutPath)) return;
+        object shell = null, shortcut = null;
+        try {
+            shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+            shortcut = shell.GetType().InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] {shortcutPath});
+            string target = (string)shortcut.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, shortcut, null);
+            string arguments = (string)shortcut.GetType().InvokeMember("Arguments", System.Reflection.BindingFlags.GetProperty, null, shortcut, null);
+            if (String.Equals(target, launcher, StringComparison.OrdinalIgnoreCase) && arguments == "launch --client " + Quote(folder)) File.Delete(shortcutPath);
+        } finally {
+            if (shortcut != null) System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shortcut);
+            if (shell != null) System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
+        }
+    }
     [STAThread]
     private static int Main(string[] args) {
         Console.OutputEncoding = Encoding.UTF8;
@@ -78,13 +94,14 @@ internal static class Program {
                 RequireClosed(folder); Console.WriteLine(Json.Serialize(RunNode(folder, args[1]))); return 0;
             }
             string action = args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "launch";
-            if (action == "status" || action == "check-update") { Console.WriteLine(Json.Serialize(RunNode(folder, action))); return 0; }
+            if (action == "status" || action == "check-update" || action == "check-remove") { Console.WriteLine(Json.Serialize(RunNode(folder, action))); return 0; }
             if (new[] {"install", "repair", "remove"}.Contains(action)) { Apply(folder, action); return 0; }
             if (action != "launch") throw new Exception("未知命令，请运行 BTR_Desktop.exe --help。");
             if (Admin()) throw new Exception("请用普通权限启动 BTR_Desktop，客户端不应以管理员身份播放视频。");
             var status = RunNode(folder, "status");
             if (Flag(status, "supported") && CacheSupported()) { if (!Flag(status, "current")) Apply(folder, "repair"); }
             else MessageBox.Show("客户端已更新到尚未适配的版本。本次只启动官方播放器，不强行接入 BTR。", "BTR 提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            RemoveLegacyShortcut(folder, Path.Combine(Root, "BTR_Desktop.exe"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "BTR Desktop.lnk"));
             Process.Start(new ProcessStartInfo(Path.Combine(folder, "哔哩哔哩.exe")) { UseShellExecute = true });
             return 0;
         } catch (Exception error) {

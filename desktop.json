@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.9.1.1-d1",
+  "version": "0.9.1.1-d2",
   "baseVersion": "0.9.1.1",
-  "adapterRevision": 1,
+  "adapterRevision": 2,
   "supportedClientVersions": ["1.18.0"],
   "update": {
     "enabled": true,

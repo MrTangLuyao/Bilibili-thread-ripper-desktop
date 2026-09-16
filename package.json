@@ -1,7 +1,7 @@
 {
   "name": "btr-desktop",
   "private": true,
-  "version": "0.9.1.1-d1",
+  "version": "0.9.1.1-d2",
   "description": "BTR desktop adapter for the official Bilibili Windows client",
   "scripts": { "build": "node tools/build.cjs", "release": "node tools/build.cjs && node tools/build-launcher.cjs && node tools/package-release.cjs", "test": "node --test test/*.test.cjs" },
   "license": "MIT"

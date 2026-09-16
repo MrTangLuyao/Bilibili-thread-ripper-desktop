@@ -1,7 +1,9 @@
 param(
     [string]$ClientPath = '',
     [switch]$NoLaunch,
-    [switch]$LibraryOnly
+    [switch]$LibraryOnly,
+    [switch]$Uninstall,
+    [string]$PackageRoot = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -95,12 +97,18 @@ function Stop-BtrClient([string]$Folder) {
         Start-Sleep -Milliseconds 500
     }
 }
-function New-BtrShortcut([string]$Launcher, [string]$Folder) {
+function Get-BtrShortcutPath { return Join-Path ([Environment]::GetFolderPath('Desktop')) 'BTR Desktop.lnk' }
+function Remove-BtrShortcut([string]$Folder, [string]$InstalledRoot) {
+    $shortcutPath = Get-BtrShortcutPath
+    if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { return }
     $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'BTR Desktop.lnk'))
-    $shortcut.TargetPath = $Launcher; $shortcut.Arguments = 'launch --client "' + $Folder + '"'
-    $shortcut.WorkingDirectory = [IO.Path]::GetDirectoryName($Launcher)
-    $shortcut.Description = 'Bilibili with BTR Desktop'; $shortcut.Save()
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    if (-not $shortcut.TargetPath -or -not [IO.Path]::IsPathRooted($shortcut.TargetPath)) { return }
+    $target = [IO.Path]::GetFullPath($shortcut.TargetPath)
+    $exact = Join-Path ([IO.Path]::GetFullPath($InstalledRoot)) 'BTR_Desktop.exe'
+    $versionsPrefix = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'BTR_Desktop\versions')).TrimEnd('\') + '\'
+    $owned = [String]::Equals($target,$exact,[StringComparison]::OrdinalIgnoreCase) -or ($target.StartsWith($versionsPrefix,[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($target) -ieq 'BTR_Desktop.exe')
+    if ($owned -and $shortcut.Arguments -ceq ('launch --client "' + $Folder + '"')) { Remove-Item -LiteralPath $shortcutPath -Force }
 }
 function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
     $client = Find-BtrClient $RequestedClient
@@ -139,13 +147,47 @@ function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
         if ($LASTEXITCODE -ne 0) { throw 'BTR install failed or Windows permission was cancelled.' }
         $statusText = & $launcher status --client $client --noninteractive
         if ($LASTEXITCODE -ne 0 -or -not ($statusText | ConvertFrom-Json).current) { throw 'Installed files did not pass verification.' }
-        New-BtrShortcut $launcher $client
+        Remove-BtrShortcut $client $destination
         [IO.File]::WriteAllText((Join-Path $root 'current.json'), (@{version=$manifest.version;installPath=$destination;clientPath=$client} | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
-        Write-Host ('Installed BTR Desktop ' + $manifest.version + '. Use the BTR Desktop shortcut next time.') -ForegroundColor Green
+        Write-Host ('Installed BTR Desktop ' + $manifest.version + '. Open Bilibili normally; no BTR shortcut is created.') -ForegroundColor Green
         if (-not $SkipLaunch) { & $launcher launch --client $client --noninteractive; if ($LASTEXITCODE -ne 0) { throw 'Installed, but client launch failed.' } }
     } finally {
         $resolvedStage = [IO.Path]::GetFullPath($stage)
         if ($resolvedStage.StartsWith([IO.Path]::GetFullPath($root).TrimEnd('\') + '\stage-', [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedStage)) { Remove-Item -LiteralPath $resolvedStage -Recurse -Force }
     }
 }
-if (-not $LibraryOnly) { Install-BtrDesktop $ClientPath ([bool]$NoLaunch) }
+function Remove-BtrDesktop([string]$RequestedClient, [string]$InstalledRoot, [bool]$SkipLaunch) {
+    $client = Find-BtrClient $RequestedClient
+    if (-not $InstalledRoot -or -not [IO.Path]::IsPathRooted($InstalledRoot)) { throw 'Missing BTR installation directory.' }
+    $launcher = Join-Path ([IO.Path]::GetFullPath($InstalledRoot)) 'BTR_Desktop.exe'
+    if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'BTR maintenance launcher not found.' }
+    # Validate the deployment and original backup while the current video is still open.
+    $checkText = & $launcher check-remove --client $client --noninteractive
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot verify original backup. Client was not closed or changed.' }
+    $check = $checkText | ConvertFrom-Json
+    if ($check.state -notin @('ready-to-remove','not-installed')) { throw 'Unexpected uninstall status.' }
+    Stop-BtrClient $client
+    & $launcher remove --client $client --noninteractive
+    if ($LASTEXITCODE -ne 0) { throw 'BTR removal failed or Windows permission was cancelled. Backup is preserved.' }
+    $statusText = & $launcher status --client $client --noninteractive
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot verify removal.' }
+    $status = $statusText | ConvertFrom-Json
+    if ($status.installed -or ($check.state -eq 'ready-to-remove' -and $status.sha256 -cne $check.originalSha256)) { throw 'Official client restoration did not pass verification.' }
+    # Remove only this installation's shortcut and pointer. Keep backups, source and user data.
+    Remove-BtrShortcut $client $InstalledRoot
+    $currentPath = Join-Path $env:LOCALAPPDATA 'BTR_Desktop\current.json'
+    if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
+        $current = [IO.File]::ReadAllText($currentPath) | ConvertFrom-Json
+        if ([String]::Equals($current.installPath,[IO.Path]::GetFullPath($InstalledRoot),[StringComparison]::OrdinalIgnoreCase) -and [String]::Equals($current.clientPath,$client,[StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $currentPath -Force }
+    }
+    Write-Host 'BTR removed. Official client restored; account data and settings preserved.' -ForegroundColor Green
+    if (-not $SkipLaunch) {
+        $exeName = ([char]0x54d4).ToString() + [char]0x54e9 + [char]0x54d4 + [char]0x54e9 + '.exe'
+        # Start the official EXE directly. The BTR launcher would install the patch again.
+        Start-Process -FilePath (Join-Path $client $exeName) -WorkingDirectory $client -WindowStyle Hidden | Out-Null
+    }
+}
+if (-not $LibraryOnly) {
+    if ($Uninstall) { Remove-BtrDesktop $ClientPath $PackageRoot ([bool]$NoLaunch) }
+    else { Install-BtrDesktop $ClientPath ([bool]$NoLaunch) }
+}

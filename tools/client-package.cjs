@@ -12,9 +12,10 @@ function hooks(bundle) {
   const preload = Buffer.from(`"use strict";\n(() => {\n` +
     `if (!process.isMainFrame || location.origin !== "https://bilipc.bilibili.com" || !/^\\/(index|player)\\.html$/.test(location.pathname)) return;\n` +
     `const {ipcRenderer}=require("electron"),channel="__BTR_DESKTOP_UPDATE__";\n` +
-    `let checking=false; const send=result=>window.postMessage({channel,type:"result",result},location.origin);\n` +
-    `window.addEventListener("message",async event=>{if(event.source!==window||event.data?.channel!==channel||event.data.type!=="check"||checking)return;checking=true;try{send(await ipcRenderer.invoke("btr-desktop:update-check"));}catch(_){send({state:"error",message:"更新检查失败，请稍后重试"});}finally{checking=false;}});\n` +
-    `document.addEventListener("click",async event=>{if(!event.isTrusted||!event.target.closest?.("#btr-desktop-install-update")||!event.target.closest?.("#btr-desktop-settings"))return;try{send(await ipcRenderer.invoke("btr-desktop:update-install"));}catch(_){send({state:"error",message:"无法启动更新，请重新运行安装命令"});}},true);\n` +
+    `let checking=false,acting=false,epoch=0; const send=result=>window.postMessage({channel,type:"result",result},location.origin);\n` +
+    `ipcRenderer.on("btr-desktop:maintenance-result",(_event,result)=>send(result));\n` +
+    `window.addEventListener("message",async event=>{if(event.source!==window||event.data?.channel!==channel||event.data.type!=="check"||checking||acting)return;checking=true;const ticket=epoch;try{const result=await ipcRenderer.invoke("btr-desktop:update-check");if(ticket===epoch)send(result);}catch(_){if(ticket===epoch)send({state:"error",message:"更新检查失败，请稍后重试"});}finally{checking=false;}});\n` +
+    `document.addEventListener("click",async event=>{if(!event.isTrusted||acting||!event.target.closest?.("#btr-desktop-settings"))return;const button=event.target.closest?.("#btr-desktop-install-update,#btr-desktop-uninstall");if(!button||button.disabled)return;const remove=button.id==="btr-desktop-uninstall";acting=true;epoch++;send({state:"confirming",message:remove?"请确认是否卸载 BTR":"请确认是否安装更新"});try{send(await ipcRenderer.invoke(remove?"btr-desktop:uninstall":"btr-desktop:update-install"));}catch(_){send({state:"error",message:remove?"无法启动卸载，请稍后重试":"无法启动更新，请重新运行安装命令"});}finally{acting=false;}},true);\n` +
     `const code = ${JSON.stringify(bundle.toString("utf8"))};\n` +
     `let injected = false;\nfunction inject() { if (injected || !document.documentElement) return; injected = true; observer.disconnect(); const script = document.createElement("script"); script.textContent = code; (document.head || document.documentElement).appendChild(script); script.remove(); }\n` +
     `const observer = new MutationObserver(inject); observer.observe(document, {childList:true,subtree:true}); inject();\n})();\n`);
@@ -62,12 +63,15 @@ function run(action, clientPath) {
   const statePath = path.join(path.dirname(target), "btr-desktop-backups");
   const stateFile = path.join(statePath, path.basename(target) === "app.asar" ? "deployment.json" : `${path.basename(target)}.deployment.json`);
   const deployment = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile)) : null;
-  if (action === "remove") {
+  if (action === "remove" || action === "check-remove") {
     if (!info.installed) return { state: "not-installed" };
     if (!deployment || deployment.patchedSha256 !== hash || deployment.clientVersion !== info.clientVersion) throw Error("当前客户端与安装记录不匹配，拒绝覆盖。请重新安装官方客户端。");
+    if (!/^[a-f0-9]{64}$/.test(deployment.originalSha256) || deployment.originalSha256 !== info.installed.originalSha256) throw Error("原始备份记录不匹配");
     const backup = path.join(statePath, `${deployment.originalSha256}.asar`);
     const original = fs.readFileSync(backup);
-    if (sha(original) !== deployment.originalSha256) throw Error("备份校验失败");
+    const originalInfo = inspect(new Asar(original));
+    if (sha(original) !== deployment.originalSha256 || originalInfo.installed || originalInfo.clientVersion !== info.clientVersion) throw Error("备份校验失败");
+    if (action === "check-remove") return { state:"ready-to-remove", originalSha256:deployment.originalSha256 };
     replace(target, original);
     return { state: "removed", clientVersion: info.clientVersion, message: "已恢复官方资源，备份和用户设置保留" };
   }
