@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d2","adapterRevision":2};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d3","adapterRevision":3};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -1240,15 +1240,15 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d2","adapterRevision":2};
   const listeners = new Set();
   const normalize = value => {
     const s = root.__BILI_RANGE_CORE__.normalizeSettings(value || {});
-    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories };
+    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false };
   };
   let current;
   try { current = normalize(JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (_) { current = normalize({}); }
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d2",
-    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 2,
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d3",
+    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 3,
     categories,
     getSettings: () => ({ ...current, debugCategories: { ...current.debugCategories } }),
     setSettings(patch) {
@@ -1585,11 +1585,25 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d2","adapterRevision":2};
   };
   function finish(result){clearTimeout(timer);const resolve=api._resolveUpdate;api._resolveUpdate=null;pending=null;emit(result);resolve?.(result);}
   root.addEventListener("message",event=>{
-    if(event.source!==root || event.data?.channel!==channel || event.data.type!=="result")return;
+    if(event.source!==root || event.data?.channel!==channel)return;
+    if(event.data.type==="auto-config") {
+      if(typeof event.data.enabled==="boolean" && api.getSettings().autoCheckUpdates!==event.data.enabled)api.setSettings({autoCheckUpdates:event.data.enabled});
+      return;
+    }
+    if(event.data.type!=="result")return;
     const value=event.data.result;
     if(!value || !["current","available","checking","confirming","installing","uninstalling","idle","error","not-configured"].includes(value.state))return;
     finish(value);
   });
+  // The main process owns one timer for all windows, not a timer in every renderer.
+  let configured=false, previousAuto;
+  const unsubscribe=api.onSettings(settings=>{
+    const enabled=settings.autoCheckUpdates!==false;
+    if(configured && previousAuto===enabled)return;
+    const changed=configured; configured=true; previousAuto=enabled;
+    root.postMessage({channel,type:"configure-auto",enabled,changed},location.origin);
+  });
+  root.addEventListener("pagehide",()=>{unsubscribe();clearTimeout(timer);},{once:true});
 })(globalThis);
 
 
@@ -1597,7 +1611,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d2","adapterRevision":2};
 (function (root) {
   "use strict";
   const api = root.__BTR_DESKTOP__;
-  let panel, navButton, unsubscribe, unsubscribeUpdate, checkedOnce = false, scheduled = false;
+  let panel, navButton, unsubscribe, unsubscribeUpdate, scheduled = false;
   const style = document.createElement("style");
   style.textContent = `
     #btr-desktop-settings{padding:24px 0;border-bottom:1px solid var(--line_regular,#303133);color:var(--text1,#d8dce2);font:inherit}
@@ -1631,6 +1645,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d2","adapterRevision":2};
         <div class="btr-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="errorNotices">显示错误</label><label><input type="checkbox" data-setting="debugNotices">Debug 模式</label></div>
         <div class="btr-debug-wrap" hidden><div class="btr-row"><button type="button" data-select="all">全选</button><button type="button" data-select="none">全不选</button></div><div class="btr-debug-options"></div></div>
+        <div class="btr-row"><label><input type="checkbox" data-setting="autoCheckUpdates">自动检查 BTR 更新</label></div>
         <div class="btr-row"><button type="button" id="btr-desktop-check-update">检查 BTR 更新</button><button type="button" id="btr-desktop-uninstall">卸载 BTR</button><button type="button" id="btr-desktop-install-update" hidden>安装更新</button></div>
         <div class="btr-note btr-update-status" role="status"></div><div class="btr-note btr-save-error" role="status"></div>`;
       for (const [key, title] of Object.entries(api.categories)) {
@@ -1673,7 +1688,6 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.1-d2","adapterRevision":2};
         install.hidden = update.state !== "available";
         install.textContent = update.manifest ? `更新到 ${update.manifest.version}` : "安装更新";
       });
-      if (!checkedOnce) { checkedOnce = true; api.checkUpdate(); }
     }
     if (!navButton?.isConnected) {
       navButton = document.createElement("button"); navButton.type = "button"; navButton.id = "btr-desktop-nav";

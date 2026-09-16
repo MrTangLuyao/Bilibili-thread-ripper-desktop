@@ -94,6 +94,11 @@ internal static class Program {
                 RequireClosed(folder); Console.WriteLine(Json.Serialize(RunNode(folder, args[1]))); return 0;
             }
             string action = args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "launch";
+            if (action == "update") {
+                if (Admin()) throw new Exception("请用普通权限运行更新程序，只有安装文件时才请求管理员授权。");
+                Application.EnableVisualStyles();
+                using (var window = new UpdateWindow(Root, folder, args)) { Application.Run(window); return window.Result; }
+            }
             if (action == "status" || action == "check-update" || action == "check-remove") { Console.WriteLine(Json.Serialize(RunNode(folder, action))); return 0; }
             if (new[] {"install", "repair", "remove"}.Contains(action)) { Apply(folder, action); return 0; }
             if (action != "launch") throw new Exception("未知命令，请运行 BTR_Desktop.exe --help。");

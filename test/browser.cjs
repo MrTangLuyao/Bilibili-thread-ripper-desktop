@@ -23,6 +23,12 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       await route.fulfill({ status: 206, headers: { "Content-Range": `bytes ${start}-${end}/8388608`, "Content-Length": String(bytes.length), "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Content-Range,Content-Length", "Content-Type": "video/mp4" }, body: bytes });
     });
     await page.goto(origin); await page.locator("#btr-desktop-settings").waitFor();
+    assert.equal(await page.locator('[data-setting=autoCheckUpdates]').isChecked(),true);
+    assert.equal(await page.evaluate(()=>__BTR_DESKTOP__.getUpdate().state),"idle");
+    await page.locator('[data-setting=autoCheckUpdates]').uncheck();
+    await page.reload();
+    assert.equal(await page.locator('[data-setting=autoCheckUpdates]').isChecked(),false);
+    assert.equal(await page.evaluate(()=>__BTR_DESKTOP__.getUpdate().state),"idle");
     assert.equal(await page.locator(".settings_catalog button").first().textContent(), "线程撕裂者");
     assert.equal(await page.locator("#btr-desktop-settings + .theme-item").count(), 1);
     assert.equal(await page.locator("#btr-desktop-check-update + #btr-desktop-uninstall").textContent(), "卸载 BTR");
@@ -39,6 +45,9 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     await page.reload();
     assert.equal(await page.locator("[data-category=download]").isChecked(), false);
     const second = await context.newPage(); await second.goto(origin);
+    assert.equal(await second.locator('[data-setting=autoCheckUpdates]').isChecked(),false);
+    await page.locator('[data-setting=autoCheckUpdates]').check();
+    await second.waitForFunction(()=>__BTR_DESKTOP__.getSettings().autoCheckUpdates===true);
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({ concurrency: 16 }));
     await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().concurrency === 16);
     console.log("PASS settings first entry, defaults, category persistence and cross-window synchronization");
@@ -80,7 +89,7 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     await page.waitForFunction(() => !document.querySelector('#btr-desktop-uninstall').disabled);
     assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),false);
     const images=path.join(root,"test-output");fs.mkdirSync(images,{recursive:true});
-    await page.locator("#btr-desktop-settings").screenshot({path:path.join(images,"d2-settings.png")});
+    await page.locator("#btr-desktop-settings").screenshot({path:path.join(images,"d3-settings.png")});
     console.log("PASS red uninstall button is immediately right of check update; confirmation and uninstall lock controls, cancellation restores them");
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({ debugNotices: false }));
     const fetchResult = await page.evaluate(async () => {

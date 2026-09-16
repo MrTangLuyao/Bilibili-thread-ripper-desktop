@@ -1,7 +1,7 @@
 (function (root) {
   "use strict";
   const api = root.__BTR_DESKTOP__;
-  let panel, navButton, unsubscribe, unsubscribeUpdate, checkedOnce = false, scheduled = false;
+  let panel, navButton, unsubscribe, unsubscribeUpdate, scheduled = false;
   const style = document.createElement("style");
   style.textContent = `
     #btr-desktop-settings{padding:24px 0;border-bottom:1px solid var(--line_regular,#303133);color:var(--text1,#d8dce2);font:inherit}
@@ -35,6 +35,7 @@
         <div class="btr-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="errorNotices">显示错误</label><label><input type="checkbox" data-setting="debugNotices">Debug 模式</label></div>
         <div class="btr-debug-wrap" hidden><div class="btr-row"><button type="button" data-select="all">全选</button><button type="button" data-select="none">全不选</button></div><div class="btr-debug-options"></div></div>
+        <div class="btr-row"><label><input type="checkbox" data-setting="autoCheckUpdates">自动检查 BTR 更新</label></div>
         <div class="btr-row"><button type="button" id="btr-desktop-check-update">检查 BTR 更新</button><button type="button" id="btr-desktop-uninstall">卸载 BTR</button><button type="button" id="btr-desktop-install-update" hidden>安装更新</button></div>
         <div class="btr-note btr-update-status" role="status"></div><div class="btr-note btr-save-error" role="status"></div>`;
       for (const [key, title] of Object.entries(api.categories)) {
@@ -77,7 +78,6 @@
         install.hidden = update.state !== "available";
         install.textContent = update.manifest ? `更新到 ${update.manifest.version}` : "安装更新";
       });
-      if (!checkedOnce) { checkedOnce = true; api.checkUpdate(); }
     }
     if (!navButton?.isConnected) {
       navButton = document.createElement("button"); navButton.type = "button"; navButton.id = "btr-desktop-nav";

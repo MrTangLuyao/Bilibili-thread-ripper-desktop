@@ -3,9 +3,17 @@ param(
     [switch]$NoLaunch,
     [switch]$LibraryOnly,
     [switch]$Uninstall,
-    [string]$PackageRoot = ''
+    [string]$PackageRoot = '',
+    [switch]$UpdateProgress,
+    [switch]$CloseFirst,
+    [string]$ExpectedVersion = '',
+    [string]$ExpectedSha256 = ''
 )
 $ErrorActionPreference = 'Stop'
+if ($UpdateProgress) { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false); $ProgressPreference = 'SilentlyContinue' }
+function Write-BtrProgress([string]$Phase, [long]$Done = 0, [long]$Total = 0) {
+    if ($UpdateProgress) { [Console]::WriteLine('BTR_PROGRESS ' + (@{phase=$Phase;done=$Done;total=$Total} | ConvertTo-Json -Compress)) }
+}
 
 function Get-BtrBytes([string]$Url, [int]$Limit) {
     if (-not $Url.StartsWith('https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/', [StringComparison]::Ordinal)) { throw 'Unexpected download URL.' }
@@ -27,6 +35,7 @@ function Get-BtrBytes([string]$Url, [int]$Limit) {
         while (($count = $stream.ReadAsync($chunk, 0, $chunk.Length, $cancel.Token).GetAwaiter().GetResult()) -gt 0) {
             if ($buffered.Length + $count -gt $Limit) { throw 'Download exceeds size limit.' }
             $buffered.Write($chunk, 0, $count)
+            if ($Url -match '/packages/') { Write-BtrProgress 'download' $buffered.Length ([long]$response.Content.Headers.ContentLength) }
         }
         return ,$buffered.ToArray()
     } finally { if ($stream) {$stream.Dispose()}; if ($response) {$response.Dispose()}; $buffered.Dispose(); $http.Dispose(); $handler.Dispose(); $cancel.Dispose() }
@@ -112,9 +121,14 @@ function Remove-BtrShortcut([string]$Folder, [string]$InstalledRoot) {
 }
 function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
     $client = Find-BtrClient $RequestedClient
+    if ($CloseFirst) { Write-BtrProgress 'closing'; Stop-BtrClient $client }
+    Write-BtrProgress 'manifest'
     Write-Host 'Checking the BTR Desktop release...'
     $manifest = Get-BtrManifest
+    if (($ExpectedVersion -and $manifest.version -cne $ExpectedVersion) -or ($ExpectedSha256 -and $manifest.sha256 -ine $ExpectedSha256)) { throw 'Release changed after confirmation. Check for updates again. Nothing was installed.' }
+    Write-BtrProgress 'download'
     $bytes = Get-BtrBytes $manifest.downloadUrl 16MB
+    Write-BtrProgress 'verify'
     if ((Get-BtrSha $bytes) -ne $manifest.sha256.ToLowerInvariant()) { throw 'Package SHA-256 mismatch. Nothing was installed.' }
     $root = Join-Path $env:LOCALAPPDATA 'BTR_Desktop'
     [IO.Directory]::CreateDirectory($root) | Out-Null
@@ -123,6 +137,7 @@ function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
     [IO.Directory]::CreateDirectory($stage) | Out-Null
     try {
         $zipPath = Join-Path $stage 'package.zip'; [IO.File]::WriteAllBytes($zipPath, $bytes)
+        Write-BtrProgress 'extract'
         Expand-BtrPackage $zipPath $stage
         $packageRoot = Join-Path $stage 'BTR_Desktop'
         $config = Get-Content -LiteralPath (Join-Path $packageRoot 'desktop.json') -Raw | ConvertFrom-Json
@@ -137,20 +152,24 @@ function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
         if (-not [IO.Path]::GetFullPath($packageRoot).StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or -not [IO.Path]::GetFullPath($destination).StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe installation move.' }
         Move-Item -LiteralPath $packageRoot -Destination $destination
         $launcher = Join-Path $destination 'BTR_Desktop.exe'
+        Write-BtrProgress 'compatibility'
         # Read-only compatibility check runs before closing the current video.
         $statusText = & $launcher status --client $client --noninteractive
         if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect client.' }
         $status = $statusText | ConvertFrom-Json
         if (-not $status.supported -or $manifest.supportedClientVersions -notcontains $status.clientVersion) { throw ('Client ' + $status.clientVersion + ' is not supported. Original client was not changed.') }
-        Stop-BtrClient $client
+        if (-not $CloseFirst) { Write-BtrProgress 'closing'; Stop-BtrClient $client }
+        Write-BtrProgress 'install'
         & $launcher install --client $client --noninteractive
         if ($LASTEXITCODE -ne 0) { throw 'BTR install failed or Windows permission was cancelled.' }
+        Write-BtrProgress 'validate'
         $statusText = & $launcher status --client $client --noninteractive
         if ($LASTEXITCODE -ne 0 -or -not ($statusText | ConvertFrom-Json).current) { throw 'Installed files did not pass verification.' }
         Remove-BtrShortcut $client $destination
         [IO.File]::WriteAllText((Join-Path $root 'current.json'), (@{version=$manifest.version;installPath=$destination;clientPath=$client} | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
         Write-Host ('Installed BTR Desktop ' + $manifest.version + '. Open Bilibili normally; no BTR shortcut is created.') -ForegroundColor Green
-        if (-not $SkipLaunch) { & $launcher launch --client $client --noninteractive; if ($LASTEXITCODE -ne 0) { throw 'Installed, but client launch failed.' } }
+        if (-not $SkipLaunch) { Write-BtrProgress 'restart'; & $launcher launch --client $client --noninteractive; if ($LASTEXITCODE -ne 0) { throw 'Installed, but client launch failed.' } }
+        Write-BtrProgress 'complete'
     } finally {
         $resolvedStage = [IO.Path]::GetFullPath($stage)
         if ($resolvedStage.StartsWith([IO.Path]::GetFullPath($root).TrimEnd('\') + '\stage-', [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedStage)) { Remove-Item -LiteralPath $resolvedStage -Recurse -Force }

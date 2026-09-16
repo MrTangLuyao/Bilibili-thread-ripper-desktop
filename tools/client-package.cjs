@@ -12,8 +12,9 @@ function hooks(bundle) {
   const preload = Buffer.from(`"use strict";\n(() => {\n` +
     `if (!process.isMainFrame || location.origin !== "https://bilipc.bilibili.com" || !/^\\/(index|player)\\.html$/.test(location.pathname)) return;\n` +
     `const {ipcRenderer}=require("electron"),channel="__BTR_DESKTOP_UPDATE__";\n` +
-    `let checking=false,acting=false,epoch=0; const send=result=>window.postMessage({channel,type:"result",result},location.origin);\n` +
+    `let checking=false,acting=false,epoch=0,configEpoch=0; const send=result=>window.postMessage({channel,type:"result",result},location.origin);\n` +
     `ipcRenderer.on("btr-desktop:maintenance-result",(_event,result)=>send(result));\n` +
+    `window.addEventListener("message",async event=>{if(event.source!==window||event.data?.channel!==channel||event.data.type!=="configure-auto"||typeof event.data.enabled!=="boolean")return;const ticket=++configEpoch;try{const result=await ipcRenderer.invoke("btr-desktop:auto-config",{enabled:event.data.enabled,changed:event.data.changed===true});if(ticket===configEpoch)window.postMessage({channel,type:"auto-config",enabled:result.enabled},location.origin);}catch(_){}});\n` +
     `window.addEventListener("message",async event=>{if(event.source!==window||event.data?.channel!==channel||event.data.type!=="check"||checking||acting)return;checking=true;const ticket=epoch;try{const result=await ipcRenderer.invoke("btr-desktop:update-check");if(ticket===epoch)send(result);}catch(_){if(ticket===epoch)send({state:"error",message:"更新检查失败，请稍后重试"});}finally{checking=false;}});\n` +
     `document.addEventListener("click",async event=>{if(!event.isTrusted||acting||!event.target.closest?.("#btr-desktop-settings"))return;const button=event.target.closest?.("#btr-desktop-install-update,#btr-desktop-uninstall");if(!button||button.disabled)return;const remove=button.id==="btr-desktop-uninstall";acting=true;epoch++;send({state:"confirming",message:remove?"请确认是否卸载 BTR":"请确认是否安装更新"});try{send(await ipcRenderer.invoke(remove?"btr-desktop:uninstall":"btr-desktop:update-install"));}catch(_){send({state:"error",message:remove?"无法启动卸载，请稍后重试":"无法启动更新，请重新运行安装命令"});}finally{acting=false;}},true);\n` +
     `const code = ${JSON.stringify(bundle.toString("utf8"))};\n` +
@@ -23,7 +24,7 @@ function hooks(bundle) {
     "update-main":fs.readFileSync(path.join(project,"src","update-main.cjs")),
     "update-provider":fs.readFileSync(path.join(project,"tools","update-provider.cjs")),
     "https-json":fs.readFileSync(path.join(project,"tools","https-json.cjs")),
-    "update-config":Buffer.from(JSON.stringify({...config,installerSha256:sha(fs.readFileSync(path.join(project,"install.ps1")))}))
+    "update-config":Buffer.from(JSON.stringify({...config,installerSha256:sha(fs.readFileSync(path.join(project,"install.ps1"))),launcherSha256:sha(fs.readFileSync(path.join(project,"BTR_Desktop.exe")))}))
   };
 }
 const hookFile = key => `btr-desktop/${key}.${key === "update-config" ? "json" : "cjs"}`;

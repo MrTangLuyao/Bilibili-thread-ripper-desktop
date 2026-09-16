@@ -7,14 +7,22 @@
 ```json
 {
   "schema": 1,
-  "version": "0.9.1.1-d2",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.1-d2.zip",
+  "version": "0.9.1.1-d3",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.1-d3.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }
 ```
 
-完整版本号相同就是最新版，不同就是有更新，包括仓库主动回退版本的情况。进入 BTR 系统设置时自动检查，也可以点击“检查 BTR 更新”；发现版本不同时出现“更新到版本号”按钮。确认安装后运行本地校验过的一键安装器，重新获取最新清单和安装包，校验完成后关闭指定客户端，安装后重新打开。下载失败不会先结束视频。
+完整版本号相同就是最新版，不同就是有更新，包括仓库主动回退版本的情况。d3 默认在启动后检查一次，随后每 30 分钟检查，由主进程统一调度，多窗口不重复弹出。发现更新直接弹原生确认窗口，取消后等下次检查。设置中的“自动检查 BTR 更新”关闭后停止自动请求，手动检查仍可使用。进入设置本身不再另发自动检查。
+
+确认后启动独立的 BTR 更新窗口，立即关闭指定客户端，然后读取清单、下载、校验、解压、安装、检查结果并重启。下载显示已接收字节和服务端提供的总字节数；没有总大小时显示活动进度条，其他阶段不伪造下载百分比。确认时锁定版本与包哈希，仓库在下载前变化会要求重新检查，不悄悄安装另一个版本。
+
+主进程校验本地维护脚本和启动器的 SHA-256。更新窗口通过非 detached 的隐藏 PowerShell 子进程执行安装，读取 stdout 阶段消息和 stderr，将结果写入 `%LOCALAPPDATA%\BTR_Desktop\logs`。只有安装验证和重启成功才关闭进度窗口；失败停留显示错误。客户端退出不会关闭独立更新窗口。原始备份保留，账号和缓存不清理。
+
+旧版 d1/d2 使用 detached 标志启动 PowerShell，在已复现的 Windows 环境中会返回 0 却不执行命令。旧版没有执行到安装脚本时无法靠发布新 ZIP 自行修复，需重新运行最新的一键安装命令。首次安装的一键命令仍在下载校验完成后再关闭客户端；从 d3 内点击更新才使用先关闭客户端的独立进度窗口。
+
+`force-update.ps1` 与 `install.ps1` 放在仓库和安装包的同一级目录，用于客户端内更新异常时恢复。它不调用旧更新器，每次从固定官方仓库重新读取安装脚本，即使版本相同也重新安装，不跳过包哈希、客户端兼容性和原始备份检查。支持 `-ClientPath` 指定客户端和 `-NoLaunch` 安装后不启动；不修改执行策略，不接受自定义下载地址。
 
 下载仅允许本仓库的 HTTPS raw 地址，拒绝跳转和任意外部地址。清单限制 64 KiB，安装包限制 16 MiB，解压后限制 24 MiB。校验包 SHA-256、版本和内部播放器脚本哈希，拒绝越界解压路径。SHA-256 用于检测损坏和文件不一致，不是独立签名；更新信任 GitHub HTTPS 和仓库维护者，因此不要执行陌生人提供的同名安装命令。
 
@@ -32,6 +40,6 @@ d2 不再创建 BTR 桌面快捷方式，安装后正常启动官方客户端即
 
 1. 修改 `desktop.json` 中的 `version`、`baseVersion`、`adapterRevision`，同步 `package.json` 的 `version`。
 2. 执行 `npm run release`，自动重建启动器、播放器脚本、ZIP 和 `latest.json`。
-3. 一起 commit 和 push 源码、`dist`、`packages`、`install.ps1`、`latest.json`。不要只改版本文件而漏传 ZIP。
+3. 一起 commit 和 push 源码、`dist`、`packages`、`install.ps1`、`force-update.ps1`、`latest.json`。不要只改版本文件而漏传 ZIP。
 
 源码和发布包一起存在同一次 commit 中，安装器可检测短暂缓存不一致并安全失败，稍后重试即可。不修改官方更新校验；未知客户端版本不会强行安装。

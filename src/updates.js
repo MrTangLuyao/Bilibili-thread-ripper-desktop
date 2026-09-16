@@ -18,9 +18,23 @@
   };
   function finish(result){clearTimeout(timer);const resolve=api._resolveUpdate;api._resolveUpdate=null;pending=null;emit(result);resolve?.(result);}
   root.addEventListener("message",event=>{
-    if(event.source!==root || event.data?.channel!==channel || event.data.type!=="result")return;
+    if(event.source!==root || event.data?.channel!==channel)return;
+    if(event.data.type==="auto-config") {
+      if(typeof event.data.enabled==="boolean" && api.getSettings().autoCheckUpdates!==event.data.enabled)api.setSettings({autoCheckUpdates:event.data.enabled});
+      return;
+    }
+    if(event.data.type!=="result")return;
     const value=event.data.result;
     if(!value || !["current","available","checking","confirming","installing","uninstalling","idle","error","not-configured"].includes(value.state))return;
     finish(value);
   });
+  // The main process owns one timer for all windows, not a timer in every renderer.
+  let configured=false, previousAuto;
+  const unsubscribe=api.onSettings(settings=>{
+    const enabled=settings.autoCheckUpdates!==false;
+    if(configured && previousAuto===enabled)return;
+    const changed=configured; configured=true; previousAuto=enabled;
+    root.postMessage({channel,type:"configure-auto",enabled,changed},location.origin);
+  });
+  root.addEventListener("pagehide",()=>{unsubscribe();clearTimeout(timer);},{once:true});
 })(globalThis);

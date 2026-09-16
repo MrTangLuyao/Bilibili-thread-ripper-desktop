@@ -6,15 +6,15 @@
   const listeners = new Set();
   const normalize = value => {
     const s = root.__BILI_RANGE_CORE__.normalizeSettings(value || {});
-    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories };
+    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false };
   };
   let current;
   try { current = normalize(JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (_) { current = normalize({}); }
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d2",
-    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 2,
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.1-d3",
+    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 3,
     categories,
     getSettings: () => ({ ...current, debugCategories: { ...current.debugCategories } }),
     setSettings(patch) {

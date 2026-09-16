@@ -37,7 +37,7 @@ test("isolated preload bridges checks but only real user clicks can request inst
   const a=emptyArchive();a.set("package.json",'{"name":"bilibili","version":"1.18.0"}');a.set("index.js","original();");a.set("render/player.html","<html></html>");
   const archive=new Asar(patch(new Asar(a.pack()),Buffer.from("window.BTR=true"),{})),code=archive.text("btr-desktop/preload.cjs");
   function runPreload(isMainFrame=true,origin="https://bilipc.bilibili.com") {
-    const events={},calls=[],messages=[],scripts=[],window={addEventListener:(type,fn)=>events[type]=fn,postMessage:value=>messages.push(value)};
+    const events={},calls=[],messages=[],scripts=[],window={addEventListener:(type,fn)=>{const old=events[type];events[type]=async e=>{await old?.(e);await fn(e);};},postMessage:value=>messages.push(value)};
     const document={documentElement:{},head:{appendChild:script=>scripts.push(script.textContent)},addEventListener:(type,fn)=>events[type]=fn,createElement:()=>({remove(){}})};
     vm.runInNewContext(code,{process:{isMainFrame},location:{origin,pathname:"/index.html"},window,document,MutationObserver:class{observe(){}disconnect(){}},require:()=>({ipcRenderer:{on(){},invoke:async name=>{calls.push(name);return {state:"current"};}}})});
     return {events,calls,messages,scripts,window};
@@ -49,6 +49,8 @@ test("isolated preload bridges checks but only real user clicks can request inst
   const removeTarget={closest:()=>({id:"btr-desktop-uninstall"})};await s.events.click({isTrusted:false,target:removeTarget});assert.equal(s.calls.length,2);
   await s.events.click({isTrusted:true,target:removeTarget});assert.equal(s.calls.at(-1),"btr-desktop:uninstall");
   assert.equal(s.messages.length,5);assert.equal(runPreload(false).scripts.length,0);assert.equal(runPreload(true,"https://evil.test").scripts.length,0);
+  await s.events.message({source:s.window,data:{channel:"__BTR_DESKTOP_UPDATE__",type:"configure-auto",enabled:true}});
+  assert.equal(s.calls.at(-1),"btr-desktop:auto-config");
 });
 test("installation repair survives an official overwrite and removal restores exact bytes", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "btr-install-test-"));
