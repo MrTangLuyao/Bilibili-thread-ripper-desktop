@@ -7,8 +7,8 @@
 ```json
 {
   "schema": 1,
-  "version": "0.9.1.2-d1",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.2-d1.zip",
+  "version": "0.9.1.2-d2",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.1.2-d2.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }
@@ -31,6 +31,14 @@ d5 起，`BTR_Desktop.exe update|uninstall|reconnect` 先作为客户端的子�
 旧版 d1/d2 使用 detached 标志启动 PowerShell，在已复现的 Windows 环境中会返回 0 却不执行命令。旧版没有执行到安装脚本时无法靠发布新 ZIP 自行修复，需重新运行最新的一键安装命令。首次安装的一键命令仍在下载校验完成后再关闭客户端；从客户端内点击更新才使用先关闭客户端的独立进度窗口。
 
 `force-update.ps1` 与 `install.ps1` 放在仓库和安装包的同一级目录，用于客户端内更新异常时恢复。它不调用旧更新器，每次从固定官方仓库重新读取安装脚本，即使版本相同也重新安装，不跳过包哈希、客户端结构检查和原始备份检查。支持 `-ClientPath` 指定客户端和 `-NoLaunch` 安装后不启动；不修改执行策略，不接受自定义下载地址。
+
+## 找客户端
+
+没传 `-ClientPath` 时，`install.ps1` 按顺序找同时有 `哔哩哔哩.exe` 和 `resources\app.asar` 的文件夹：`Program Files\bilibili`，`current.json` 里上次安装记下的客户端，`%LOCALAPPDATA%\Programs\bilibili`，`Program Files (x86)\bilibili`，最后是名字含 bilibili 或哔哩哔哩的卸载注册表项。官方安装程序不写 `InstallLocation`，所以也用 `DisplayIcon` 和 `UninstallString` 所在的文件夹。
+
+都找不到时（0.9.1.2-d2 起），脚本在 PowerShell 里请用户输入安装文件夹，可以粘贴路径，也可以把 `哔哩哔哩.exe` 拖进窗口，带不带引号、结尾有没有反斜杠都行。输错会再问，直接回车就取消，什么都不改。这一步在拿维护锁之前，用户慢慢输入不会让后台监视程序一直等。客户端里的更新、卸载和重新接入窗口总是传 `-ClientPath`，不会停下来问；传了 `-ClientPath` 但不对，或者 PowerShell 没法输入时，照旧报 `Bilibili client not found`。
+
+安装脚本内的中文提示写成 `\u` 转义，文件保持纯 ASCII，Windows PowerShell 5.1 直接运行本地文件时不会按 GBK 读错。`BTR_Desktop.exe` 不带 `--client` 时，使用 `current.json` 里属于这个安装目录的客户端，没有记录才用 `Program Files\bilibili`，所以装在别处的客户端也能直接在安装文件夹运行 `BTR_Desktop.exe remove`。
 
 下载仅允许本仓库的 HTTPS raw 地址，拒绝跳转和任意外部地址。清单限制 64 KiB，安装包限制 16 MiB，解压后限制 24 MiB。校验包 SHA-256、版本和内部播放器脚本哈希，拒绝越界解压路径。SHA-256 用于检测损坏和文件不一致，不是独立签名；更新信任 GitHub HTTPS 和仓库维护者，因此不要执行陌生人提供的同名安装命令。
 

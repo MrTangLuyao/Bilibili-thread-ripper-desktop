@@ -54,9 +54,15 @@ internal static class Program {
         return pointer != null && pointer.ContainsKey("installPath") && SamePath(pointer["installPath"], root)
             && (client == null || (pointer.ContainsKey("clientPath") && SamePath(pointer["clientPath"], client)));
     }
+    // Without --client, use the folder this installation was set up for, so clients outside Program Files work too.
+    private static string DefaultClient() {
+        var pointer = ReadPointer();
+        string recorded = OwnedBy(pointer, Root) && pointer.ContainsKey("clientPath") ? pointer["clientPath"] as string : null;
+        return !String.IsNullOrEmpty(recorded) && Path.IsPathRooted(recorded) ? recorded : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "bilibili");
+    }
     internal static string Client(string[] args) {
         int i = Array.IndexOf(args, "--client");
-        string folder = i >= 0 && i + 1 < args.Length ? args[i + 1] : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "bilibili");
+        string folder = i >= 0 && i + 1 < args.Length ? args[i + 1] : DefaultClient();
         folder = Path.GetFullPath(folder).TrimEnd('\\');
         if (!File.Exists(Path.Combine(folder, ClientExe)) || !File.Exists(Path.Combine(folder, "resources", "app.asar"))) throw new Exception("找不到客户端，请加上 --client 后指定安装目录。");
         return folder;

@@ -2,7 +2,7 @@
 
 把 Bilibili 线程撕裂者带到官方 Windows 客户端里，原本的播放器、字幕、弹幕和快捷键都保留。
 
-当前版本 **0.9.1.2-d1**，不再限制官方客户端版本，已在官方客户端 **1.18.0** 实测
+当前版本 **0.9.1.2-d2**，不再限制官方客户端版本，已在官方客户端 **1.18.0** 实测
 
 ## 安装
 
@@ -17,6 +17,8 @@ irm https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop
 ```
 
 这会执行这个仓库中的安装脚本，脚本可直接查看 [install.ps1](install.ps1)
+
+哔哩哔哩没装在默认位置（`C:\Program Files\bilibili`）也没关系，脚本找不到时会让你输入安装文件夹，把 `哔哩哔哩.exe` 拖进窗口再按回车就行
 
 ## 强制更新（如遇到更新异常使用脚本更新）：
 

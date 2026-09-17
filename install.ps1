@@ -55,21 +55,62 @@ function Get-BtrManifest {
     if ($null -ne $manifest.supportedClientVersions -and @($manifest.supportedClientVersions | Where-Object { $_ -notmatch '^\d+(\.\d+){2,3}$' }).Count) { throw 'Invalid legacy client list.' }
     return $manifest
 }
+# Chinese text is kept as \u escapes so the script stays ASCII for Windows PowerShell 5.1.
+function Get-BtrText([string]$Escaped) { return [regex]::Unescape($Escaped) }
+function Test-BtrClient([string]$Folder) {
+    try {
+        if (-not $Folder -or -not [IO.Path]::IsPathRooted($Folder)) { return $false }
+        $exeName = ([char]0x54d4).ToString() + [char]0x54e9 + [char]0x54d4 + [char]0x54e9 + '.exe'
+        return ((Test-Path -LiteralPath (Join-Path $Folder $exeName) -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $Folder 'resources\app.asar') -PathType Leaf))
+    } catch { return $false }
+}
+function Read-BtrLine([string]$Prompt) { return Read-Host $Prompt }
+function Request-BtrClient([string]$DefaultFolder) {
+    # The client is not in the default folder: ask for it. Accepts the folder or the dropped exe, quoted or not.
+    Write-Host ''
+    Write-Host ((Get-BtrText '\u6ca1\u6709\u5728\u9ed8\u8ba4\u4f4d\u7f6e\u627e\u5230\u54d4\u54e9\u54d4\u54e9\uff1a') + $DefaultFolder) -ForegroundColor Yellow
+    Write-Host ((Get-BtrText '\u8bf7\u8f93\u5165\u54d4\u54e9\u54d4\u54e9\u7684\u5b89\u88c5\u6587\u4ef6\u5939\uff08\u91cc\u9762\u6709 \u54d4\u54e9\u54d4\u54e9.exe\uff09\uff0c\u6bd4\u5982 ') + 'D:\bilibili')
+    Write-Host (Get-BtrText '\u4e0d\u77e5\u9053\u5728\u54ea\uff1a\u53f3\u952e\u684c\u9762\u4e0a\u7684\u54d4\u54e9\u54d4\u54e9\u56fe\u6807\uff0c\u9009\u201c\u6253\u5f00\u6587\u4ef6\u6240\u5728\u7684\u4f4d\u7f6e\u201d\uff0c\u628a\u5730\u5740\u680f\u7684\u8def\u5f84\u590d\u5236\u8fc7\u6765\u3002\u4e5f\u53ef\u4ee5\u76f4\u63a5\u628a \u54d4\u54e9\u54d4\u54e9.exe \u62d6\u8fdb\u8fd9\u4e2a\u7a97\u53e3\u3002')
+    Write-Host (Get-BtrText '\u4ec0\u4e48\u90fd\u4e0d\u8f93\u5165\u76f4\u63a5\u6309\u56de\u8f66\u5c31\u53d6\u6d88\u3002')
+    while ($true) {
+        try { $answer = Read-BtrLine (Get-BtrText '\u54d4\u54e9\u54d4\u54e9\u5b89\u88c5\u6587\u4ef6\u5939') }
+        catch { throw 'Bilibili client not found. Install the official Windows client first, or pass -ClientPath.' }
+        if ([string]::IsNullOrWhiteSpace($answer)) { throw (Get-BtrText '\u5df2\u53d6\u6d88\uff0c\u6ca1\u6709\u505a\u4efb\u4f55\u4fee\u6539\u3002') }
+        $folder = [Environment]::ExpandEnvironmentVariables($answer.Trim().Trim('"', "'").Trim())
+        try { if ([IO.Path]::IsPathRooted($folder) -and (Test-Path -LiteralPath $folder -PathType Leaf)) { $folder = [IO.Path]::GetDirectoryName($folder) } } catch { }
+        if (Test-BtrClient $folder) {
+            $folder = [IO.Path]::GetFullPath($folder).TrimEnd('\')
+            Write-Host ((Get-BtrText '\u627e\u5230\u54d4\u54e9\u54d4\u54e9\uff1a') + $folder) -ForegroundColor Green
+            return $folder
+        }
+        Write-Host (Get-BtrText '\u8fd9\u91cc\u6ca1\u627e\u5230\u54d4\u54e9\u54d4\u54e9\uff0c\u8bf7\u8f93\u5165\u5b8c\u6574\u7684\u6587\u4ef6\u5939\u8def\u5f84\u518d\u8bd5\u4e00\u6b21\u3002') -ForegroundColor Yellow
+    }
+}
 function Find-BtrClient([string]$Requested) {
+    $defaultFolder = Join-Path $env:ProgramFiles 'bilibili'
     if ($Requested) { $candidates = @($Requested) }
     else {
-        $candidates = @((Join-Path $env:ProgramFiles 'bilibili'), (Join-Path $env:LOCALAPPDATA 'Programs\bilibili'))
+        $candidates = @($defaultFolder)
+        # The folder recorded by the last BTR install, so a forced update does not ask again.
+        try { $candidates += ([IO.File]::ReadAllText((Join-Path $env:LOCALAPPDATA 'BTR_Desktop\current.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json).clientPath } catch { }
+        $candidates += Join-Path $env:LOCALAPPDATA 'Programs\bilibili'
         if (${env:ProgramFiles(x86)}) { $candidates += Join-Path ${env:ProgramFiles(x86)} 'bilibili' }
+        # The official installer leaves InstallLocation empty, but its icon and uninstaller sit in the client folder.
         foreach ($key in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
             foreach ($item in @(Get-ItemProperty $key -ErrorAction SilentlyContinue)) {
-                if ($item.DisplayName -match 'bilibili|\u54d4\u54e9\u54d4\u54e9' -and $item.InstallLocation) { $candidates += $item.InstallLocation }
+                if ($item.DisplayName -notmatch 'bilibili|\u54d4\u54e9\u54d4\u54e9') { continue }
+                if ($item.InstallLocation) { $candidates += $item.InstallLocation.Trim().Trim('"') }
+                foreach ($file in @($item.DisplayIcon, $item.UninstallString)) {
+                    if ($file -match '^\s*"?([^"]+?\.(exe|ico))') { try { $candidates += [IO.Path]::GetDirectoryName($Matches[1]) } catch { } }
+                }
             }
         }
     }
-    $exeName = ([char]0x54d4).ToString() + [char]0x54e9 + [char]0x54d4 + [char]0x54e9 + '.exe'
     foreach ($folder in $candidates) {
-        if ((Test-Path -LiteralPath (Join-Path $folder $exeName) -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $folder 'resources\app.asar') -PathType Leaf)) { return [IO.Path]::GetFullPath($folder).TrimEnd('\') }
+        if (Test-BtrClient $folder) { return [IO.Path]::GetFullPath($folder).TrimEnd('\') }
     }
+    # Maintenance windows always pass the client and cannot answer a prompt.
+    if (-not $Requested -and -not $UpdateProgress) { return Request-BtrClient $defaultFolder }
     throw 'Bilibili client not found. Install the official Windows client first, or pass -ClientPath.'
 }
 function Expand-BtrPackage([string]$Archive, [string]$Destination) {
@@ -137,8 +178,10 @@ function Remove-BtrShortcut([string]$Folder, [string]$InstalledRoot) {
     if ($owned -and $shortcut.Arguments -ceq ('launch --client "' + $Folder + '"')) { Remove-Item -LiteralPath $shortcutPath -Force }
 }
 function Install-BtrDesktop([string]$RequestedClient, [bool]$SkipLaunch) {
+    # Find the client before taking the lock, so the guard does not wait while someone types a folder.
+    $client = Find-BtrClient $RequestedClient
     $lock = Enter-BtrMaintenance
-    try { Invoke-BtrInstall $RequestedClient $SkipLaunch } finally { $lock.Dispose() }
+    try { Invoke-BtrInstall $client $SkipLaunch } finally { $lock.Dispose() }
 }
 function Invoke-BtrInstall([string]$RequestedClient, [bool]$SkipLaunch) {
     $client = Find-BtrClient $RequestedClient

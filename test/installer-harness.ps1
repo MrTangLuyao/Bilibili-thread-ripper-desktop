@@ -116,4 +116,67 @@ $entry=$zip.CreateEntry('BTR_Desktop/../../escape.txt');$writer=New-Object IO.St
 $rejected=$false
 try{Expand-BtrPackage $badZip (Join-Path $Fixture 'extract')}catch{$rejected=$true}
 if(-not $rejected -or (Test-Path -LiteralPath (Join-Path $Fixture 'escape.txt'))){throw 'Unsafe ZIP was not rejected'}
-'PASS Windows PowerShell IEX installation, reinstall, maintenance lock, offline reconnect to a new client build, offline uninstall, backup failure, exact restoration, scoped cleanup and unsafe ZIP rejection'
+# A client outside Program Files, in a folder with Chinese characters and spaces. The real
+# registry and Program Files are hidden so only the fixture folders can be found.
+$env:ProgramFiles=Join-Path $Fixture 'empty program files'
+${env:ProgramFiles(x86)}=$env:ProgramFiles
+$script:FakeUninstallEntries=@()
+function Get-ItemProperty { return $script:FakeUninstallEntries }
+$exeName=(Get-BtrText '\u54d4\u54e9\u54d4\u54e9')+'.exe'
+$moved=Join-Path $Fixture ((Get-BtrText '\u8f6f\u4ef6')+' apps\bilibili')
+[IO.Directory]::CreateDirectory((Join-Path $moved 'resources')) | Out-Null
+[IO.File]::WriteAllText((Join-Path $moved $exeName),'client')
+[IO.File]::WriteAllText((Join-Path $moved 'resources\app.asar'),'client')
+$pointer=Join-Path $env:LOCALAPPDATA 'BTR_Desktop\current.json'
+Remove-Item -LiteralPath $pointer -Force
+$missing=$null
+$UpdateProgress=$true
+try { Find-BtrClient '' | Out-Null } catch { $missing=$_.Exception.Message }
+$UpdateProgress=$false
+if($missing -notmatch 'Bilibili client not found'){throw 'A maintenance window was asked for a folder'}
+$missing=$null
+try { Find-BtrClient '' | Out-Null } catch { $missing=$_.Exception.Message }
+if($missing -notmatch 'Bilibili client not found'){throw 'A PowerShell without input did not fail cleanly: '+$missing}
+$missing=$null
+try { Find-BtrClient (Join-Path $Fixture 'not-a-client') | Out-Null } catch { $missing=$_.Exception.Message }
+if($missing -notmatch 'Bilibili client not found'){throw 'An explicit wrong folder was not rejected'}
+# The official uninstall entry has no InstallLocation; its icon and uninstaller point at the folder.
+$other=Join-Path $Fixture 'other-app'
+[IO.Directory]::CreateDirectory((Join-Path $other 'resources')) | Out-Null
+[IO.File]::WriteAllText((Join-Path $other $exeName),'other');[IO.File]::WriteAllText((Join-Path $other 'resources\app.asar'),'other')
+$script:FakeUninstallEntries=@([pscustomobject]@{DisplayName='Other';InstallLocation=$other;DisplayIcon='';UninstallString=''},[pscustomobject]@{DisplayName=(Get-BtrText '\u54d4\u54e9\u54d4\u54e9');InstallLocation='';DisplayIcon=(Join-Path $moved 'uninstallerIcon.ico');UninstallString=''})
+if((Find-BtrClient '') -cne $moved){throw 'Client was not found from the uninstall icon'}
+$script:FakeUninstallEntries=@([pscustomobject]@{DisplayName='BiliBili';InstallLocation='';DisplayIcon='';UninstallString='"'+(Join-Path $moved ((Get-BtrText '\u5378\u8f7d')+$exeName))+'" /currentuser'})
+if((Find-BtrClient '') -cne $moved){throw 'Client was not found from the quoted uninstaller'}
+$script:FakeUninstallEntries=@()
+[IO.File]::WriteAllText($pointer,(@{installPath='C:\another-install';clientPath=$moved}|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
+if((Find-BtrClient '') -cne $moved){throw 'Client was not found from the last installation record'}
+Remove-Item -LiteralPath $pointer -Force
+# Nothing found: ask. Wrong answers are asked again; quotes, a dropped exe and a trailing slash work.
+$script:Answers=New-Object Collections.Queue
+$script:Asked=0
+function Read-BtrLine([string]$Prompt) { $script:Asked++; if($script:Answers.Count){return $script:Answers.Dequeue()}; return $null }
+foreach($answer in @('bilibili',('"'+(Join-Path $Fixture 'nothing here')+'"'),($other+'\resources'),('"'+(Join-Path $moved $exeName)+'"'))){$script:Answers.Enqueue($answer)}
+$found=Find-BtrClient ''
+if($found -cne $moved -or $script:Asked -ne 4){throw 'Typed client folder was not accepted after retries'}
+$script:Answers.Enqueue("  '"+$moved+"\'  ")
+if((Find-BtrClient '') -cne $moved){throw 'Quoted folder with a trailing slash was not accepted'}
+# Pressing Enter cancels before the maintenance lock is taken, so a held lock does not matter.
+$held=Enter-BtrMaintenance
+$cancelled=$null
+$script:Answers.Enqueue('')
+try { Install-BtrDesktop '' $true } catch { $cancelled=$_.Exception.Message } finally { $held.Dispose() }
+if($cancelled -cne (Get-BtrText '\u5df2\u53d6\u6d88\uff0c\u6ca1\u6709\u505a\u4efb\u4f55\u4fee\u6539\u3002')){throw 'Empty answer did not cancel before the lock: '+$cancelled}
+$cancelled=$null
+try { Find-BtrClient '' | Out-Null } catch { $cancelled=$_.Exception.Message }
+if(-not $cancelled){throw 'End of input did not cancel'}
+# Without --client the launcher uses the folder recorded for its own installation.
+$clientOf=$assembly.GetType('Program').GetMethod('Client',[Reflection.BindingFlags]'NonPublic,Static')
+[IO.File]::WriteAllText($pointer,(@{installPath=[IO.Path]::GetDirectoryName($launcher);clientPath=$moved}|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
+if($clientOf.Invoke($null,@(,[string[]]@('remove'))) -cne $moved){throw 'Launcher did not use the recorded client folder'}
+[IO.File]::WriteAllText($pointer,(@{installPath='C:\another-install';clientPath=$moved}|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
+$fallback=$null
+try { $fallback=$clientOf.Invoke($null,@(,[string[]]@('remove'))) } catch { }
+if($fallback -eq $moved){throw 'Launcher used a folder recorded by another installation'}
+if($clientOf.Invoke($null,@(,[string[]]@('status','--client',$client))) -cne $client){throw 'Launcher ignored --client'}
+'PASS Windows PowerShell IEX installation, reinstall, maintenance lock, offline reconnect to a new client build, offline uninstall, backup failure, exact restoration, scoped cleanup, unsafe ZIP rejection and clients outside the default folder'
