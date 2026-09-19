@@ -107,3 +107,110 @@ test("the downloader reports received bytes, bans a silent node and stops using 
   bans.reset();
   assert.equal(resolver.allows(mediaUrl(DEAD)),true);
 });
+
+const AKAMAI="upos-hz-mirrorakam.akamaized.net";
+const akamaiUrl=os=>`https://${AKAMAI}/upgcxcode/00/00/1/1-1-30080.m4s?deadline=1&os=${os}`;
+const refused=Object.assign(new Error("Range 校验失败：HTTP 403"),{status:403});
+
+test("akamaized.net addresses are host-swapped only when Bilibili hands out nothing else",()=>{
+  const {cdn}=load();
+  const hostsOf=list=>Array.from(new Set(Array.from(list,url=>new URL(url).hostname)));
+  const akamaiOnly={baseUrl:akamaiUrl("cosovbv"),backupUrl:[akamaiUrl("akam")]};
+  const mainland=cdn.representationUrls(akamaiOnly,"mainland");
+  assert.equal(mainland.length,16,"two addresses on each of the eight mainland nodes");
+  assert.deepEqual(hostsOf(mainland),Array.from(cdn.MAINLAND_HOSTS));
+  // Node-major order: the first requests already cover both addresses.
+  assert.deepEqual(Array.from(mainland.slice(0,2),url=>new URL(url).searchParams.get("os")),["cosovbv","akam"]);
+  const overseas=cdn.representationUrls(akamaiOnly,"overseas");
+  assert.deepEqual(Array.from(overseas.slice(0,2)),[akamaiUrl("cosovbv"),akamaiUrl("akam")],"the originals stay first in overseas mode");
+  assert.deepEqual(hostsOf(overseas),[AKAMAI,...cdn.OVERSEAS_HOSTS]);
+  // With an ordinary address present nothing changes: it is the only donor.
+  const mixed={baseUrl:akamaiUrl("akam"),backupUrl:[mediaUrl("upos-sz-mirrorcosov.bilivideo.com")]};
+  const mixedMainland=cdn.representationUrls(mixed,"mainland");
+  assert.equal(mixedMainland.length,8);
+  assert.ok(mixedMainland.every(url=>new URL(url).searchParams.get("os")==="x"));
+  assert.equal(cdn.swapOrdinaryHost(akamaiUrl("akam"),"upos-sz-mirrorali.bilivideo.com"),null);
+  // A peer CDN's port must not follow the address to another node.
+  assert.equal(new URL(cdn.swapOrdinaryHost("https://xy1x2x3x4xy.mcdn.bilivideo.cn:4483/upgcxcode/a/b.m4s?e=1","upos-sz-mirrorali.bilivideo.com")).port,"");
+});
+
+test("a refused address is dropped instead of the nodes it was tried on",()=>{
+  const {cdn}=load();
+  const banned=[];
+  const bans=cdn.createBanList({onBan:(host,_count,_error,kind)=>banned.push(kind)});
+  const at=(host,os)=>akamaiUrl(os).replace(AKAMAI,host);
+  // Refused before anything has delivered: nobody is blamed yet.
+  bans.record(akamaiUrl("cosovbv"),0,refused);bans.record(akamaiUrl("cosovbv"),0,refused);
+  assert.equal(bans.allows(akamaiUrl("cosovbv")),true);assert.deepEqual(banned,[]);
+  // The same node serves the other address, so the refused address is at fault.
+  bans.success(akamaiUrl("akam"));
+  assert.equal(bans.allowsAddress(akamaiUrl("cosovbv")),false);
+  assert.equal(bans.allows(at("upos-sz-mirrorali.bilivideo.com","cosovbv")),false,"the address is dropped on every node");
+  assert.equal(bans.allows(akamaiUrl("akam")),true);assert.deepEqual(Array.from(bans.hosts()),[]);assert.deepEqual(banned,["address"]);
+  // A node that refuses an address other nodes serve is at fault itself.
+  const lacking="upos-sz-mirrorbos.bilivideo.com";
+  bans.record(at(lacking,"akam"),0,refused);assert.equal(bans.allows(at(lacking,"akam")),true);
+  bans.record(at(lacking,"akam"),0,refused);
+  assert.equal(bans.allowsNode(at(lacking,"akam")),false);assert.equal(bans.allowsAddress(at(lacking,"akam")),true);
+  assert.deepEqual(Array.from(bans.hosts()),[lacking]);assert.deepEqual(banned,["address","node"]);
+  bans.reset();
+  assert.equal(bans.allows(akamaiUrl("cosovbv")),true);assert.equal(bans.allows(at(lacking,"akam")),true);
+});
+
+test("a node that delivers one address keeps being used after refusing another that other nodes serve",()=>{
+  const {cdn}=load();
+  const banned=[];
+  const bans=cdn.createBanList({onBan:(host,_count,_error,kind)=>banned.push(kind)});
+  const mirror="upos-sz-mirroraliov.bilivideo.com";
+  const at=(host,os)=>akamaiUrl(os).replace(AKAMAI,host);
+  // The mirror serves both addresses, akamaized.net only one of them.
+  bans.success(at(mirror,"cosovbv"));bans.success(at(mirror,"akam"));bans.success(akamaiUrl("akam"));
+  bans.record(akamaiUrl("cosovbv"),0,refused);bans.record(akamaiUrl("cosovbv"),0,refused);
+  assert.equal(bans.allows(akamaiUrl("cosovbv")),false,"that address is not asked of that node again");
+  assert.equal(bans.allows(akamaiUrl("akam")),true,"the node keeps its working address");
+  assert.equal(bans.allows(at(mirror,"cosovbv")),true,"the address stays in use where it works");
+  assert.deepEqual(Array.from(bans.hosts()),[]);assert.deepEqual(banned,["address"]);
+  const resolver=cdn.createResolver({baseUrl:akamaiUrl("cosovbv"),backupUrl:[akamaiUrl("akam")]},()=> "overseas",bans);
+  assert.ok(Array.from(resolver.urls()).includes(akamaiUrl("akam")));assert.ok(!Array.from(resolver.urls()).includes(akamaiUrl("cosovbv")));
+  assert.ok(Array.from(resolver.status()).every(item=>item.state!=="banned"));
+});
+
+test("an akamaized.net-only video downloads in mainland mode and stops asking for the refused address",{timeout:60000},async()=>{
+  const {cdn,idm}=load();
+  const asked={cosovbv:0,akam:0};
+  const nativeFetch=async(url,init)=>{
+    const os=new URL(url).searchParams.get("os");asked[os]+=1;
+    if(os==="cosovbv")return new Response("",{status:403});
+    const [,start,end]=/bytes=(\d+)-(\d+)/.exec(init.headers.Range).map(Number);
+    return new Response(new Uint8Array(end-start+1),{status:206,headers:{"Content-Range":`bytes ${start}-${end}/8388608`}});
+  };
+  const downloader=idm.createDownloader({getSettings:()=>({concurrency:8,mode:"mainland"}),nativeFetch});
+  const bans=cdn.createBanList();
+  const resolver=cdn.createResolver({baseUrl:akamaiUrl("cosovbv"),backupUrl:[akamaiUrl("akam")]},()=> "mainland",bans);
+  const meta=await downloader.downloadRange({start:0,end:999,length:1000},resolver,{parallel:false,kind:"meta"});
+  assert.equal(meta.bytes.length,1000);
+  const range={start:1000,end:1000+1024*1024-1,length:1024*1024};
+  assert.equal((await downloader.downloadRange(range,resolver,{parallel:true,kind:"video"})).bytes.length,range.length);
+  assert.equal(bans.allowsAddress(akamaiUrl("cosovbv")),false);assert.deepEqual(Array.from(bans.hosts()),[],"no node is banned for the refused address");
+  const before=asked.cosovbv;
+  await downloader.downloadRange(range,resolver,{parallel:true,kind:"video"});
+  assert.equal(asked.cosovbv,before,"the refused address gets no new requests");
+  assert.ok(Array.from(resolver.status()).every(item=>item.state!=="banned"));
+});
+
+test("a piece with a single address survives failed replies instead of ending the video",{timeout:60000},async()=>{
+  const {idm}=load();
+  const only=mediaUrl("upos-sz-mirrorali.bilivideo.com");
+  let requests=0;
+  const nativeFetch=async(_url,init)=>{
+    requests+=1;
+    if(requests<=2)return new Response("",{status:503});
+    const [,start,end]=/bytes=(\d+)-(\d+)/.exec(init.headers.Range).map(Number);
+    return new Response(new Uint8Array(end-start+1),{status:206,headers:{"Content-Range":`bytes ${start}-${end}/8388608`}});
+  };
+  const resolver={urls:()=>[only],ordered:()=>[only],rescueCandidates:()=>[only],rangeCandidates:()=>[only],allows:()=>true,success(){},failure(){}};
+  const downloader=idm.createDownloader({getSettings:()=>({concurrency:4}),nativeFetch});
+  const range={start:0,end:32767,length:32768};
+  const result=await downloader.downloadRange(range,resolver,{parallel:true,kind:"video"});
+  assert.equal(result.bytes.length,range.length);assert.equal(requests,3);
+});

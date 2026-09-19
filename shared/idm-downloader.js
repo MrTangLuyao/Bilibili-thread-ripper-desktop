@@ -4,6 +4,9 @@
   const core = root.__BILI_RANGE_CORE__;
   if (!core) return;
 
+  const PIECE_ROUNDS = 3;
+  const PIECE_RETRY_WINDOW_MS = 25000;
+
   function abortError(reason) {
     if (reason instanceof Error || reason instanceof DOMException) return reason;
     return new DOMException("播放器任务已取消", "AbortError");
@@ -129,7 +132,8 @@
         clearTimeout(firstByteTimer);
         const contentRange = core.parseContentRange(response.headers.get("content-range"));
         if (response.status !== 206 || !contentRange || contentRange.start !== piece.start || contentRange.end !== piece.end) {
-          throw new Error(`Range 校验失败：HTTP ${response.status}`);
+          // The status tells a refused signed address (4xx) apart from a node that is down.
+          throw Object.assign(new Error(`Range 校验失败：HTTP ${response.status}`), { status: response.status });
         }
         const bytes = await readBody(response, controller, transferId, settings, received);
         if (bytes.byteLength !== piece.length) throw new Error(`子块长度不符：${bytes.byteLength}/${piece.length}`);
@@ -151,9 +155,25 @@
       }
     }
 
-    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0) {
+    function pause(delayMs, signal) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(done, delayMs);
+        function done() {
+          signal?.removeEventListener("abort", canceled);
+          resolve();
+        }
+        function canceled() {
+          clearTimeout(timer);
+          reject(abortError(signal.reason));
+        }
+        if (signal?.aborted) canceled();
+        else signal?.addEventListener("abort", canceled, { once: true });
+      });
+    }
+
+    function pieceCandidates(piece, resolver, preferredUrls, round) {
       const preferred = Array.isArray(preferredUrls) ? preferredUrls : [];
-      const preferredOffset = preferred.length ? piece.index % preferred.length : 0;
+      const preferredOffset = preferred.length ? (piece.index + round) % preferred.length : 0;
       const rotatedPreferred = preferred.slice(preferredOffset).concat(preferred.slice(0, preferredOffset));
       const rescue = (typeof resolver.rescueCandidates === "function" ? resolver.rescueCandidates() : resolver.ordered(piece.index))
         .filter((url) => !rotatedPreferred.includes(url));
@@ -166,51 +186,79 @@
       for (const url of resolver.ordered(piece.index)) {
         if (!candidates.includes(url)) candidates.push(url);
       }
-      const settings = core.normalizeSettings(getSettings());
-      const limit = Math.min(8, candidates.length);
-      const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
-      const tried = new Set();
-      let lastError = null;
+      return candidates;
+    }
 
+    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0) {
+      const settings = core.normalizeSettings(getSettings());
+      const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
       const startup = startupMode === true || startupMode === "probe";
       const probe = startupMode === "probe";
-      const batchWidth = probe ? limit : 2;
-      while (tried.size < limit) {
-        if (signal?.aborted) throw abortError(signal.reason);
-        // A node banned while this piece was waiting is skipped, unless only banned nodes are left.
-        const untried = candidates.filter((url) => !tried.has(url));
-        const open = untried.filter(allowed);
-        const pair = (open.length ? open : untried).slice(0, batchWidth);
-        if (!pair.length) break;
-        pair.forEach((url) => tried.add(url));
-        const controllers = pair.map(() => new AbortController());
-        const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
-        if (signal?.aborted) cancelAll();
-        else signal?.addEventListener("abort", cancelAll, { once: true });
-        const attempts = pair.map((url, pairIndex) => (async () => {
-          if (pairIndex) await new Promise((resolve, reject) => {
-            const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : settings.hedgeDelayMs;
-            const timer = setTimeout(resolve, delay);
-            const canceled = () => {
-              clearTimeout(timer);
-              reject(abortError(controllers[pairIndex].signal.reason));
-            };
-            if (controllers[pairIndex].signal.aborted) canceled();
-            else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
-          });
-          return attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0));
-        })());
-        try {
-          const winner = await Promise.any(attempts);
-          controllers.forEach((controller) => {
-            if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
-          });
-          return winner;
-        } catch (aggregate) {
-          lastError = aggregate?.errors?.at?.(-1) || aggregate;
+      const startedAt = performance.now();
+      let lastError = null;
+
+      // Failing a piece ends acceleration for the whole video, and the list can be as short as
+      // one working address. One slow reply must not decide that, so the list is walked again
+      // after a pause; node health and bans have changed by then, so it is rebuilt each time.
+      for (let round = 0; round < PIECE_ROUNDS; round += 1) {
+        if (round) {
+          if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
+          await pause(Math.min(2000, 500 * (2 ** (round - 1))), signal);
+        }
+        const candidates = pieceCandidates(piece, resolver, preferredUrls, round);
+        const limit = Math.min(8, candidates.length);
+        const batchWidth = probe ? limit : 2;
+        const tried = new Set();
+        while (tried.size < limit) {
           if (signal?.aborted) throw abortError(signal.reason);
-        } finally {
-          signal?.removeEventListener("abort", cancelAll);
+          // A node banned while this piece was waiting is skipped, unless only banned nodes are left.
+          const untried = candidates.filter((url) => !tried.has(url));
+          const open = untried.filter(allowed);
+          const pair = (open.length ? open : untried).slice(0, batchWidth);
+          if (!pair.length) break;
+          pair.forEach((url) => tried.add(url));
+          const controllers = pair.map(() => new AbortController());
+          const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
+          if (signal?.aborted) cancelAll();
+          else signal?.addEventListener("abort", cancelAll, { once: true });
+          // A first copy that is refused at once (HTTP 403) should not leave the piece idle
+          // for the rest of the hedge delay.
+          let firstFailed = () => {};
+          const firstFailure = new Promise((resolve) => { firstFailed = resolve; });
+          const attempts = pair.map((url, pairIndex) => (async () => {
+            if (pairIndex) await new Promise((resolve, reject) => {
+              const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : settings.hedgeDelayMs;
+              const timer = setTimeout(resolve, delay);
+              firstFailure.then(() => {
+                clearTimeout(timer);
+                resolve();
+              });
+              const canceled = () => {
+                clearTimeout(timer);
+                reject(abortError(controllers[pairIndex].signal.reason));
+              };
+              if (controllers[pairIndex].signal.aborted) canceled();
+              else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
+            });
+            try {
+              return await attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0));
+            } catch (error) {
+              if (!pairIndex) firstFailed();
+              throw error;
+            }
+          })());
+          try {
+            const winner = await Promise.any(attempts);
+            controllers.forEach((controller) => {
+              if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
+            });
+            return winner;
+          } catch (aggregate) {
+            lastError = aggregate?.errors?.at?.(-1) || aggregate;
+            if (signal?.aborted) throw abortError(signal.reason);
+          } finally {
+            signal?.removeEventListener("abort", cancelAll);
+          }
         }
       }
       throw lastError || new Error("没有可用 CDN");
@@ -232,13 +280,7 @@
       return attempt(piece, url, controller.signal, kind, resolver, priority);
     }
 
-    async function downloadStartupRange(range, resolver, options) {
-      const candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
-        .filter((url, index, all) => all.indexOf(url) === index)
-        .slice(0, 3);
-      if (!candidates.length) throw new Error("没有可用 CDN");
-      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
-      const piece = { index: 0, start: range.start, end: range.end, length: range.length };
+    async function startupAttempt(piece, candidates, resolver, options) {
       const controllers = candidates.map(() => new AbortController());
       const cancelAll = () => controllers.forEach((controller) => {
         if (!controller.signal.aborted) controller.abort(abortError(options.signal?.reason));
@@ -265,15 +307,43 @@
         controllers.forEach((controller) => {
           if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
         });
-        return {
-          bytes: winner.bytes,
-          pieceCount: 1,
-          total: winner.total || null,
-          hosts: [new URL(winner.url).hostname]
-        };
+        return winner;
       } finally {
         options.signal?.removeEventListener("abort", cancelAll);
       }
+    }
+
+    async function downloadStartupRange(range, resolver, options) {
+      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
+      const piece = { index: 0, start: range.start, end: range.end, length: range.length };
+      const startedAt = performance.now();
+      let lastError = null;
+      // The addresses that just failed are backing off by the next round, so each round
+      // moves on to the next three.
+      for (let round = 0; round < PIECE_ROUNDS; round += 1) {
+        if (round) {
+          if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
+          await pause(Math.min(2000, 500 * (2 ** (round - 1))), options.signal);
+        }
+        let candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
+          .filter((url, index, all) => all.indexOf(url) === index)
+          .slice(0, 3);
+        if (!candidates.length && round) candidates = resolver.ordered(round).slice(0, 3);
+        if (!candidates.length) break;
+        try {
+          const winner = await startupAttempt(piece, candidates, resolver, options);
+          return {
+            bytes: winner.bytes,
+            pieceCount: 1,
+            total: winner.total || null,
+            hosts: [new URL(winner.url).hostname]
+          };
+        } catch (error) {
+          if (options.signal?.aborted) throw abortError(options.signal.reason);
+          lastError = error;
+        }
+      }
+      throw lastError || new Error("没有可用 CDN");
     }
 
     async function downloadStartupMediaRange(range, resolver, options, settings) {

@@ -41,13 +41,15 @@
     }
   }
 
-  function swapOrdinaryHost(rawUrl, targetHost) {
-    if (isAkamaiUrl(rawUrl)) return null;
+  function swapOrdinaryHost(rawUrl, targetHost, allowAkamai = false) {
+    if (!allowAkamai && isAkamaiUrl(rawUrl)) return null;
     const host = String(targetHost || "").toLowerCase();
     if (!GLOBAL_HOSTS.includes(host)) return null;
     try {
       const url = new URL(rawUrl);
-      url.host = host;
+      // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
+      url.hostname = host;
+      url.port = "";
       return url.href;
     } catch (_error) {
       return null;
@@ -61,9 +63,19 @@
       .map(safeMediaUrl)
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index);
-    const donor = originals.find((url) => !isAkamaiUrl(url));
     const hosts = mode === "mainland" ? MAINLAND_HOSTS : OVERSEAS_HOSTS;
-    const synthetic = donor ? hosts.map((host) => swapOrdinaryHost(donor, host)).map(safeMediaUrl).filter(Boolean) : [];
+    const donor = originals.find((url) => !isAkamaiUrl(url));
+    // Some overseas accounts are given nothing but akamaized.net addresses. That used to leave
+    // no node at all in mainland mode and a single one in overseas mode. The nodes accept
+    // those signatures too, so only in that case the akamaized.net addresses are the donors.
+    // Bilibili may hand out an address that every node refuses (HTTP 403) next to one that
+    // works, so each of them is tried; the ban list drops the refused one. Node-major order
+    // keeps the first requests spread over several nodes.
+    const synthetic = (donor
+      ? hosts.map((host) => swapOrdinaryHost(donor, host))
+      : hosts.flatMap((host) => originals.map((url) => swapOrdinaryHost(url, host, true))))
+      .map(safeMediaUrl)
+      .filter(Boolean);
     const allowedOriginals = mode === "mainland"
       ? originals.filter((url) => MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()))
       : originals.filter((url) => !MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()));
@@ -75,29 +87,83 @@
     catch (_error) { return ""; }
   }
 
+  // The signed address without its node: the same address can be asked of any node.
+  function addressOf(value) {
+    try {
+      const url = new URL(value);
+      return url.pathname + url.search;
+    } catch (_error) {
+      return "";
+    }
+  }
+
   // A CDN node that twice fails without sending a single byte is skipped for the
   // rest of the current video. The owner resets the list when the video changes.
+  //
+  // HTTP 4xx means the node answered and refused the signed address, and either side can be
+  // at fault: a node may lack the file, or Bilibili may have handed out an address that every
+  // node refuses. What has delivered data decides it. Refused by a node that serves other
+  // addresses, the address is dropped; refused where other nodes serve it, the node is.
+  // With neither known yet, the reply counts against nobody until one of them delivers.
   function createBanList(options = {}) {
     const limit = Math.max(1, Math.trunc(Number(options.limit)) || 2);
-    const strikes = new Map();
-    const banned = new Set();
+    const emptyReplies = new Map();
+    const goodNodes = new Set();
+    const goodAddresses = new Set();
+    const reported = new Set();
+    let banned = new Set();
+
+    function judge(url, error) {
+      const strikes = new Map();
+      for (const [key, count] of emptyReplies) {
+        const [node, address, refused] = key.split("\n");
+        // A node that serves other addresses and refuses one that other nodes serve loses only
+        // that pair; it is often the fastest node for the addresses it does serve.
+        const blamed = !refused ? `node:${node}`
+          : goodNodes.has(node) ? (goodAddresses.has(address) ? `pair:${node} ${address}` : `address:${address}`)
+            : goodAddresses.has(address) ? `node:${node}` : "";
+        if (blamed) strikes.set(blamed, (strikes.get(blamed) || 0) + count);
+      }
+      banned = new Set([...strikes].filter(([, count]) => count >= limit).map(([key]) => key));
+      let added = false;
+      for (const key of banned) {
+        if (reported.has(key)) continue;
+        reported.add(key);
+        added = true;
+        const isNode = key.startsWith("node:");
+        try { options.onBan?.(isNode ? key.slice(5) : hostOf(url), strikes.get(key), error, isNode ? "node" : "address"); } catch (_error) {}
+      }
+      return added;
+    }
+
     return Object.freeze({
       record(url, receivedBytes, error) {
         if (error?.name === "AbortError" || Number(receivedBytes) > 0) return false;
-        const host = hostOf(url);
-        if (!host || banned.has(host)) return false;
-        const count = (strikes.get(host) || 0) + 1;
-        strikes.set(host, count);
-        if (count < limit) return false;
-        banned.add(host);
-        try { options.onBan?.(host, count, error); } catch (_error) {}
-        return true;
+        const node = hostOf(url);
+        if (!node) return false;
+        const status = Number(error?.status) || 0;
+        const key = `${node}\n${addressOf(url)}\n${status >= 400 && status < 500 ? "refused" : ""}`;
+        emptyReplies.set(key, (emptyReplies.get(key) || 0) + 1);
+        return judge(url, error);
       },
-      allows: (url) => !banned.has(hostOf(url)),
-      hosts: () => [...banned],
+      success(url) {
+        const node = hostOf(url);
+        const address = addressOf(url);
+        if (!node || (goodNodes.has(node) && goodAddresses.has(address))) return;
+        goodNodes.add(node);
+        goodAddresses.add(address);
+        judge(url, null);
+      },
+      allows: (url) => !banned.has(`node:${hostOf(url)}`) && !banned.has(`address:${addressOf(url)}`) && !banned.has(`pair:${hostOf(url)} ${addressOf(url)}`),
+      allowsNode: (url) => !banned.has(`node:${hostOf(url)}`),
+      allowsAddress: (url) => !banned.has(`address:${addressOf(url)}`),
+      hosts: () => [...banned].filter((key) => key.startsWith("node:")).map((key) => key.slice(5)),
       reset() {
-        strikes.clear();
-        banned.clear();
+        emptyReplies.clear();
+        goodNodes.clear();
+        goodAddresses.clear();
+        reported.clear();
+        banned = new Set();
       }
     });
   }
@@ -190,6 +256,7 @@
     }
 
     function success(url, bps) {
+      bans?.success?.(url);
       const old = health.get(url) || {};
       health.set(url, {
         failures: 0,
@@ -213,11 +280,15 @@
 
     function status() {
       const now = Date.now();
-      return allUrls().map((url) => {
+      // A refused address says nothing about its node, so it is left out of the node list.
+      const all = allUrls();
+      const usable = bans?.allowsAddress ? all.filter(bans.allowsAddress) : all;
+      return (usable.length ? usable : all).map((url) => {
         const item = health.get(url) || {};
+        const nodeBanned = bans && !(bans.allowsNode ? bans.allowsNode(url) : bans.allows(url));
         return {
           host: new URL(url).hostname,
-          state: bans && !bans.allows(url) ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
+          state: nodeBanned ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
           bps: item.bps || 0
         };
       });

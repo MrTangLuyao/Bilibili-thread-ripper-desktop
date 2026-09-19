@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -185,13 +185,15 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
     }
   }
 
-  function swapOrdinaryHost(rawUrl, targetHost) {
-    if (isAkamaiUrl(rawUrl)) return null;
+  function swapOrdinaryHost(rawUrl, targetHost, allowAkamai = false) {
+    if (!allowAkamai && isAkamaiUrl(rawUrl)) return null;
     const host = String(targetHost || "").toLowerCase();
     if (!GLOBAL_HOSTS.includes(host)) return null;
     try {
       const url = new URL(rawUrl);
-      url.host = host;
+      // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
+      url.hostname = host;
+      url.port = "";
       return url.href;
     } catch (_error) {
       return null;
@@ -205,9 +207,19 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
       .map(safeMediaUrl)
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index);
-    const donor = originals.find((url) => !isAkamaiUrl(url));
     const hosts = mode === "mainland" ? MAINLAND_HOSTS : OVERSEAS_HOSTS;
-    const synthetic = donor ? hosts.map((host) => swapOrdinaryHost(donor, host)).map(safeMediaUrl).filter(Boolean) : [];
+    const donor = originals.find((url) => !isAkamaiUrl(url));
+    // Some overseas accounts are given nothing but akamaized.net addresses. That used to leave
+    // no node at all in mainland mode and a single one in overseas mode. The nodes accept
+    // those signatures too, so only in that case the akamaized.net addresses are the donors.
+    // Bilibili may hand out an address that every node refuses (HTTP 403) next to one that
+    // works, so each of them is tried; the ban list drops the refused one. Node-major order
+    // keeps the first requests spread over several nodes.
+    const synthetic = (donor
+      ? hosts.map((host) => swapOrdinaryHost(donor, host))
+      : hosts.flatMap((host) => originals.map((url) => swapOrdinaryHost(url, host, true))))
+      .map(safeMediaUrl)
+      .filter(Boolean);
     const allowedOriginals = mode === "mainland"
       ? originals.filter((url) => MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()))
       : originals.filter((url) => !MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()));
@@ -219,29 +231,83 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
     catch (_error) { return ""; }
   }
 
+  // The signed address without its node: the same address can be asked of any node.
+  function addressOf(value) {
+    try {
+      const url = new URL(value);
+      return url.pathname + url.search;
+    } catch (_error) {
+      return "";
+    }
+  }
+
   // A CDN node that twice fails without sending a single byte is skipped for the
   // rest of the current video. The owner resets the list when the video changes.
+  //
+  // HTTP 4xx means the node answered and refused the signed address, and either side can be
+  // at fault: a node may lack the file, or Bilibili may have handed out an address that every
+  // node refuses. What has delivered data decides it. Refused by a node that serves other
+  // addresses, the address is dropped; refused where other nodes serve it, the node is.
+  // With neither known yet, the reply counts against nobody until one of them delivers.
   function createBanList(options = {}) {
     const limit = Math.max(1, Math.trunc(Number(options.limit)) || 2);
-    const strikes = new Map();
-    const banned = new Set();
+    const emptyReplies = new Map();
+    const goodNodes = new Set();
+    const goodAddresses = new Set();
+    const reported = new Set();
+    let banned = new Set();
+
+    function judge(url, error) {
+      const strikes = new Map();
+      for (const [key, count] of emptyReplies) {
+        const [node, address, refused] = key.split("\n");
+        // A node that serves other addresses and refuses one that other nodes serve loses only
+        // that pair; it is often the fastest node for the addresses it does serve.
+        const blamed = !refused ? `node:${node}`
+          : goodNodes.has(node) ? (goodAddresses.has(address) ? `pair:${node} ${address}` : `address:${address}`)
+            : goodAddresses.has(address) ? `node:${node}` : "";
+        if (blamed) strikes.set(blamed, (strikes.get(blamed) || 0) + count);
+      }
+      banned = new Set([...strikes].filter(([, count]) => count >= limit).map(([key]) => key));
+      let added = false;
+      for (const key of banned) {
+        if (reported.has(key)) continue;
+        reported.add(key);
+        added = true;
+        const isNode = key.startsWith("node:");
+        try { options.onBan?.(isNode ? key.slice(5) : hostOf(url), strikes.get(key), error, isNode ? "node" : "address"); } catch (_error) {}
+      }
+      return added;
+    }
+
     return Object.freeze({
       record(url, receivedBytes, error) {
         if (error?.name === "AbortError" || Number(receivedBytes) > 0) return false;
-        const host = hostOf(url);
-        if (!host || banned.has(host)) return false;
-        const count = (strikes.get(host) || 0) + 1;
-        strikes.set(host, count);
-        if (count < limit) return false;
-        banned.add(host);
-        try { options.onBan?.(host, count, error); } catch (_error) {}
-        return true;
+        const node = hostOf(url);
+        if (!node) return false;
+        const status = Number(error?.status) || 0;
+        const key = `${node}\n${addressOf(url)}\n${status >= 400 && status < 500 ? "refused" : ""}`;
+        emptyReplies.set(key, (emptyReplies.get(key) || 0) + 1);
+        return judge(url, error);
       },
-      allows: (url) => !banned.has(hostOf(url)),
-      hosts: () => [...banned],
+      success(url) {
+        const node = hostOf(url);
+        const address = addressOf(url);
+        if (!node || (goodNodes.has(node) && goodAddresses.has(address))) return;
+        goodNodes.add(node);
+        goodAddresses.add(address);
+        judge(url, null);
+      },
+      allows: (url) => !banned.has(`node:${hostOf(url)}`) && !banned.has(`address:${addressOf(url)}`) && !banned.has(`pair:${hostOf(url)} ${addressOf(url)}`),
+      allowsNode: (url) => !banned.has(`node:${hostOf(url)}`),
+      allowsAddress: (url) => !banned.has(`address:${addressOf(url)}`),
+      hosts: () => [...banned].filter((key) => key.startsWith("node:")).map((key) => key.slice(5)),
       reset() {
-        strikes.clear();
-        banned.clear();
+        emptyReplies.clear();
+        goodNodes.clear();
+        goodAddresses.clear();
+        reported.clear();
+        banned = new Set();
       }
     });
   }
@@ -334,6 +400,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
     }
 
     function success(url, bps) {
+      bans?.success?.(url);
       const old = health.get(url) || {};
       health.set(url, {
         failures: 0,
@@ -357,11 +424,15 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
 
     function status() {
       const now = Date.now();
-      return allUrls().map((url) => {
+      // A refused address says nothing about its node, so it is left out of the node list.
+      const all = allUrls();
+      const usable = bans?.allowsAddress ? all.filter(bans.allowsAddress) : all;
+      return (usable.length ? usable : all).map((url) => {
         const item = health.get(url) || {};
+        const nodeBanned = bans && !(bans.allowsNode ? bans.allowsNode(url) : bans.allows(url));
         return {
           host: new URL(url).hostname,
-          state: bans && !bans.allows(url) ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
+          state: nodeBanned ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
           bps: item.bps || 0
         };
       });
@@ -390,6 +461,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
 
   const core = root.__BILI_RANGE_CORE__;
   if (!core) return;
+
+  const PIECE_ROUNDS = 3;
+  const PIECE_RETRY_WINDOW_MS = 25000;
 
   function abortError(reason) {
     if (reason instanceof Error || reason instanceof DOMException) return reason;
@@ -516,7 +590,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
         clearTimeout(firstByteTimer);
         const contentRange = core.parseContentRange(response.headers.get("content-range"));
         if (response.status !== 206 || !contentRange || contentRange.start !== piece.start || contentRange.end !== piece.end) {
-          throw new Error(`Range 校验失败：HTTP ${response.status}`);
+          // The status tells a refused signed address (4xx) apart from a node that is down.
+          throw Object.assign(new Error(`Range 校验失败：HTTP ${response.status}`), { status: response.status });
         }
         const bytes = await readBody(response, controller, transferId, settings, received);
         if (bytes.byteLength !== piece.length) throw new Error(`子块长度不符：${bytes.byteLength}/${piece.length}`);
@@ -538,9 +613,25 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
       }
     }
 
-    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0) {
+    function pause(delayMs, signal) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(done, delayMs);
+        function done() {
+          signal?.removeEventListener("abort", canceled);
+          resolve();
+        }
+        function canceled() {
+          clearTimeout(timer);
+          reject(abortError(signal.reason));
+        }
+        if (signal?.aborted) canceled();
+        else signal?.addEventListener("abort", canceled, { once: true });
+      });
+    }
+
+    function pieceCandidates(piece, resolver, preferredUrls, round) {
       const preferred = Array.isArray(preferredUrls) ? preferredUrls : [];
-      const preferredOffset = preferred.length ? piece.index % preferred.length : 0;
+      const preferredOffset = preferred.length ? (piece.index + round) % preferred.length : 0;
       const rotatedPreferred = preferred.slice(preferredOffset).concat(preferred.slice(0, preferredOffset));
       const rescue = (typeof resolver.rescueCandidates === "function" ? resolver.rescueCandidates() : resolver.ordered(piece.index))
         .filter((url) => !rotatedPreferred.includes(url));
@@ -553,51 +644,79 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
       for (const url of resolver.ordered(piece.index)) {
         if (!candidates.includes(url)) candidates.push(url);
       }
-      const settings = core.normalizeSettings(getSettings());
-      const limit = Math.min(8, candidates.length);
-      const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
-      const tried = new Set();
-      let lastError = null;
+      return candidates;
+    }
 
+    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0) {
+      const settings = core.normalizeSettings(getSettings());
+      const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
       const startup = startupMode === true || startupMode === "probe";
       const probe = startupMode === "probe";
-      const batchWidth = probe ? limit : 2;
-      while (tried.size < limit) {
-        if (signal?.aborted) throw abortError(signal.reason);
-        // A node banned while this piece was waiting is skipped, unless only banned nodes are left.
-        const untried = candidates.filter((url) => !tried.has(url));
-        const open = untried.filter(allowed);
-        const pair = (open.length ? open : untried).slice(0, batchWidth);
-        if (!pair.length) break;
-        pair.forEach((url) => tried.add(url));
-        const controllers = pair.map(() => new AbortController());
-        const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
-        if (signal?.aborted) cancelAll();
-        else signal?.addEventListener("abort", cancelAll, { once: true });
-        const attempts = pair.map((url, pairIndex) => (async () => {
-          if (pairIndex) await new Promise((resolve, reject) => {
-            const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : settings.hedgeDelayMs;
-            const timer = setTimeout(resolve, delay);
-            const canceled = () => {
-              clearTimeout(timer);
-              reject(abortError(controllers[pairIndex].signal.reason));
-            };
-            if (controllers[pairIndex].signal.aborted) canceled();
-            else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
-          });
-          return attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0));
-        })());
-        try {
-          const winner = await Promise.any(attempts);
-          controllers.forEach((controller) => {
-            if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
-          });
-          return winner;
-        } catch (aggregate) {
-          lastError = aggregate?.errors?.at?.(-1) || aggregate;
+      const startedAt = performance.now();
+      let lastError = null;
+
+      // Failing a piece ends acceleration for the whole video, and the list can be as short as
+      // one working address. One slow reply must not decide that, so the list is walked again
+      // after a pause; node health and bans have changed by then, so it is rebuilt each time.
+      for (let round = 0; round < PIECE_ROUNDS; round += 1) {
+        if (round) {
+          if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
+          await pause(Math.min(2000, 500 * (2 ** (round - 1))), signal);
+        }
+        const candidates = pieceCandidates(piece, resolver, preferredUrls, round);
+        const limit = Math.min(8, candidates.length);
+        const batchWidth = probe ? limit : 2;
+        const tried = new Set();
+        while (tried.size < limit) {
           if (signal?.aborted) throw abortError(signal.reason);
-        } finally {
-          signal?.removeEventListener("abort", cancelAll);
+          // A node banned while this piece was waiting is skipped, unless only banned nodes are left.
+          const untried = candidates.filter((url) => !tried.has(url));
+          const open = untried.filter(allowed);
+          const pair = (open.length ? open : untried).slice(0, batchWidth);
+          if (!pair.length) break;
+          pair.forEach((url) => tried.add(url));
+          const controllers = pair.map(() => new AbortController());
+          const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
+          if (signal?.aborted) cancelAll();
+          else signal?.addEventListener("abort", cancelAll, { once: true });
+          // A first copy that is refused at once (HTTP 403) should not leave the piece idle
+          // for the rest of the hedge delay.
+          let firstFailed = () => {};
+          const firstFailure = new Promise((resolve) => { firstFailed = resolve; });
+          const attempts = pair.map((url, pairIndex) => (async () => {
+            if (pairIndex) await new Promise((resolve, reject) => {
+              const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : settings.hedgeDelayMs;
+              const timer = setTimeout(resolve, delay);
+              firstFailure.then(() => {
+                clearTimeout(timer);
+                resolve();
+              });
+              const canceled = () => {
+                clearTimeout(timer);
+                reject(abortError(controllers[pairIndex].signal.reason));
+              };
+              if (controllers[pairIndex].signal.aborted) canceled();
+              else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
+            });
+            try {
+              return await attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0));
+            } catch (error) {
+              if (!pairIndex) firstFailed();
+              throw error;
+            }
+          })());
+          try {
+            const winner = await Promise.any(attempts);
+            controllers.forEach((controller) => {
+              if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
+            });
+            return winner;
+          } catch (aggregate) {
+            lastError = aggregate?.errors?.at?.(-1) || aggregate;
+            if (signal?.aborted) throw abortError(signal.reason);
+          } finally {
+            signal?.removeEventListener("abort", cancelAll);
+          }
         }
       }
       throw lastError || new Error("没有可用 CDN");
@@ -619,13 +738,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
       return attempt(piece, url, controller.signal, kind, resolver, priority);
     }
 
-    async function downloadStartupRange(range, resolver, options) {
-      const candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
-        .filter((url, index, all) => all.indexOf(url) === index)
-        .slice(0, 3);
-      if (!candidates.length) throw new Error("没有可用 CDN");
-      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
-      const piece = { index: 0, start: range.start, end: range.end, length: range.length };
+    async function startupAttempt(piece, candidates, resolver, options) {
       const controllers = candidates.map(() => new AbortController());
       const cancelAll = () => controllers.forEach((controller) => {
         if (!controller.signal.aborted) controller.abort(abortError(options.signal?.reason));
@@ -652,15 +765,43 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
         controllers.forEach((controller) => {
           if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
         });
-        return {
-          bytes: winner.bytes,
-          pieceCount: 1,
-          total: winner.total || null,
-          hosts: [new URL(winner.url).hostname]
-        };
+        return winner;
       } finally {
         options.signal?.removeEventListener("abort", cancelAll);
       }
+    }
+
+    async function downloadStartupRange(range, resolver, options) {
+      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
+      const piece = { index: 0, start: range.start, end: range.end, length: range.length };
+      const startedAt = performance.now();
+      let lastError = null;
+      // The addresses that just failed are backing off by the next round, so each round
+      // moves on to the next three.
+      for (let round = 0; round < PIECE_ROUNDS; round += 1) {
+        if (round) {
+          if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
+          await pause(Math.min(2000, 500 * (2 ** (round - 1))), options.signal);
+        }
+        let candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
+          .filter((url, index, all) => all.indexOf(url) === index)
+          .slice(0, 3);
+        if (!candidates.length && round) candidates = resolver.ordered(round).slice(0, 3);
+        if (!candidates.length) break;
+        try {
+          const winner = await startupAttempt(piece, candidates, resolver, options);
+          return {
+            bytes: winner.bytes,
+            pieceCount: 1,
+            total: winner.total || null,
+            hosts: [new URL(winner.url).hostname]
+          };
+        } catch (error) {
+          if (options.signal?.aborted) throw abortError(options.signal.reason);
+          lastError = error;
+        }
+      }
+      throw lastError || new Error("没有可用 CDN");
     }
 
     async function downloadStartupMediaRange(range, resolver, options, settings) {
@@ -1312,7 +1453,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.4-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.5-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, debugCategories: { ...current.debugCategories } }),
@@ -1386,9 +1527,13 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
     if (["done", "error", "cancel"].includes(event.phase)) active.delete(event.id);
     stats.activeThreads = active.size;
   }
-  // A node that twice sends nothing is skipped until the video changes.
+  // A node that twice sends nothing is skipped until the video changes. A signed address that
+  // the nodes keep refusing (HTTP 4xx) is dropped instead of the nodes it was tried on.
+  // Same wording as the browser version.
   const bans = resolverFactory.createBanList({
-    onBan: host => log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
+    onBan: (host, _count, _error, kind) => kind === "address"
+      ? log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "download")
+      : log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
   });
   // This is the shared browser downloader. The adapter changes only its host environment.
   const downloader = root.__BILI_IDM_DOWNLOADER_FACTORY__.createDownloader({
@@ -1432,8 +1577,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.4-d1","adapterRevision":1};
       const rep = representations.get(mediaKey(url));
       const exact = rep && [rep.baseUrl, rep.base_url, ...(rep.backupUrl || rep.backup_url || [])].includes(url);
       const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans);
-      // Some client responses contain only a signed Akamai URL. Preserve it;
-      // never invent a mainland hostname for an Akamai-specific signature.
+      // When no other node can take this address, keep the one the client asked for. An
+      // akamaized.net-only address goes to other nodes too; the ban list drops refused ones.
       resolvers.set(key, Object.freeze({ ...resolver,
         urls: () => { const urls = resolver.urls(); return urls.length ? urls : resolver.startupCandidates(); },
         rangeCandidates: () => { const urls = resolver.rangeCandidates(); return urls.length ? urls : resolver.startupCandidates(); },

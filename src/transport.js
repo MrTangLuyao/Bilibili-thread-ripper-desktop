@@ -49,9 +49,13 @@
     if (["done", "error", "cancel"].includes(event.phase)) active.delete(event.id);
     stats.activeThreads = active.size;
   }
-  // A node that twice sends nothing is skipped until the video changes.
+  // A node that twice sends nothing is skipped until the video changes. A signed address that
+  // the nodes keep refusing (HTTP 4xx) is dropped instead of the nodes it was tried on.
+  // Same wording as the browser version.
   const bans = resolverFactory.createBanList({
-    onBan: host => log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
+    onBan: (host, _count, _error, kind) => kind === "address"
+      ? log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "download")
+      : log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
   });
   // This is the shared browser downloader. The adapter changes only its host environment.
   const downloader = root.__BILI_IDM_DOWNLOADER_FACTORY__.createDownloader({
@@ -95,8 +99,8 @@
       const rep = representations.get(mediaKey(url));
       const exact = rep && [rep.baseUrl, rep.base_url, ...(rep.backupUrl || rep.backup_url || [])].includes(url);
       const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans);
-      // Some client responses contain only a signed Akamai URL. Preserve it;
-      // never invent a mainland hostname for an Akamai-specific signature.
+      // When no other node can take this address, keep the one the client asked for. An
+      // akamaized.net-only address goes to other nodes too; the ban list drops refused ones.
       resolvers.set(key, Object.freeze({ ...resolver,
         urls: () => { const urls = resolver.urls(); return urls.length ? urls : resolver.startupCandidates(); },
         rangeCandidates: () => { const urls = resolver.rangeCandidates(); return urls.length ? urls : resolver.startupCandidates(); },
