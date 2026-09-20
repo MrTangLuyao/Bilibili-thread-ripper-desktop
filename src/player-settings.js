@@ -10,6 +10,7 @@
     #${id} .btr-native-setting-title{margin:0 0 8px;color:#fff}
     #${id} .bui-radio-group{display:flex!important;flex-wrap:wrap!important;gap:8px!important;margin:0!important}
     #${id} .bui-radio-item{margin:0!important}
+    #${id} .btr-custom-hint{margin:-8px 0 16px;color:hsla(0,0%,100%,.6);line-height:1.5}
     #${id} .btr-save-error{color:#ff8585;line-height:1.5}
   `;
   (document.head || document.documentElement).append(style);
@@ -36,8 +37,11 @@
     if (panel?.parentElement === target) return;
     unsubscribe?.(); panel?.remove();
     panel = document.createElement("div"); panel.id = id;
+    // The servers of the custom mode are picked in the client's settings page; this menu is too small for the list.
+    const hint = document.createElement("div"); hint.className = "btr-custom-hint"; hint.hidden = true;
     panel.append(
-      group("线程撕裂者 CDN", "mode", [["mainland", "大陆 CDN"], ["overseas", "海外 CDN"]]),
+      group("线程撕裂者 CDN", "mode", [["mainland", "大陆 CDN"], ["overseas", "海外 CDN"], ["custom", "自定义"]]),
+      hint,
       group("并发线程", "concurrency", threads.map(value => [value, String(value)]))
     );
     const error = document.createElement("div"); error.className = "btr-save-error"; error.setAttribute("role", "status"); panel.append(error);
@@ -51,6 +55,10 @@
     target.insertBefore(panel, target.querySelector(".bpx-player-ctrl-setting-others") || target.firstChild);
     unsubscribe = api.onSettings(settings => {
       for (const input of panel.querySelectorAll("[data-btr-setting]")) input.checked = input.value === String(settings[input.dataset.btrSetting]);
+      hint.hidden = settings.mode !== "custom";
+      hint.textContent = settings.customHosts.length
+        ? `已选 ${settings.customHosts.length} 个服务器，在客户端「设置 → 线程撕裂者」里增减。`
+        : "还没选服务器，暂时按大陆 CDN 下载。请到客户端「设置 → 线程撕裂者」里选择。";
     });
   }
   const observer = new MutationObserver(() => { if (!scheduled) { scheduled = true; requestAnimationFrame(mount); } });

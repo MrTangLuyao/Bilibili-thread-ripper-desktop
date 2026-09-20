@@ -28,6 +28,7 @@
     drain() {
       while (this.active < this.limit && this.queue.length) {
         const entry = this.queue.shift();
+        entry.signal?.removeEventListener("abort", entry.cancel);
         if (entry.signal?.aborted) {
           entry.reject(abortError(entry.signal.reason));
           continue;
@@ -53,6 +54,14 @@
           priority: Number(priority) || 0,
           sequence: this.sequence++
         };
+        entry.cancel = () => {
+          const index = this.queue.indexOf(entry);
+          if (index < 0) return;
+          this.queue.splice(index, 1);
+          signal.removeEventListener("abort", entry.cancel);
+          reject(abortError(signal.reason));
+        };
+        signal?.addEventListener("abort", entry.cancel, { once: true });
         this.queue.push(entry);
         this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.drain();
@@ -74,6 +83,11 @@
         return bytes;
       }
       const reader = response.body.getReader();
+      // Do not rely on fetch implementations to unblock read() after abort. A
+      // pending reader must release its concurrency slot before a quality change.
+      const cancelReader = () => { reader.cancel(controller.signal.reason).catch(() => {}); };
+      controller.signal.addEventListener("abort", cancelReader, { once: true });
+      if (controller.signal.aborted) cancelReader();
       const chunks = [];
       let total = 0;
       let stallTimer = null;
@@ -85,6 +99,7 @@
       try {
         while (true) {
           const { done, value } = await reader.read();
+          if (controller.signal.aborted) throw abortError(controller.signal.reason);
           if (done) break;
           armStall();
           const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -95,6 +110,7 @@
         }
       } finally {
         clearTimeout(stallTimer);
+        controller.signal.removeEventListener("abort", cancelReader);
         reader.releaseLock?.();
       }
       const bytes = new Uint8Array(total);
@@ -150,6 +166,9 @@
       } finally {
         clearTimeout(firstByteTimer);
         clearTimeout(totalTimer);
+        // Invalid headers can reject before readBody obtains a reader. Stop that
+        // response too, otherwise it keeps downloading after releasing the slot.
+        controller.abort();
         signal?.removeEventListener("abort", cancel);
         release();
       }
@@ -367,7 +386,7 @@
         "probe",
         220
       );
-      await options.onOrderedChunk(headResult.bytes, head);
+      await options.onOrderedChunk(headResult.bytes, head, headResult.total);
       if (head.end >= range.end) {
         options.onStartupScheduled?.();
         return {
@@ -400,7 +419,7 @@
           while (ordered[nextOrderedIndex]) {
             const item = ordered[nextOrderedIndex];
             ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex]);
+            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
             nextOrderedIndex += 1;
           }
         });
@@ -475,7 +494,7 @@
           while (ordered[nextOrderedIndex]) {
             const item = ordered[nextOrderedIndex];
             ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex]);
+            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
             nextOrderedIndex += 1;
           }
         });
@@ -510,7 +529,7 @@
       };
     }
 
-    return Object.freeze({ downloadRange });
+    return Object.freeze({ downloadRange, applySettings: () => semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency) });
   }
 
   root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader });

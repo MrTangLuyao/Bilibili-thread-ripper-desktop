@@ -44,7 +44,7 @@
   function swapOrdinaryHost(rawUrl, targetHost, allowAkamai = false) {
     if (!allowAkamai && isAkamaiUrl(rawUrl)) return null;
     const host = String(targetHost || "").toLowerCase();
-    if (!GLOBAL_HOSTS.includes(host)) return null;
+    if (core.normalizeCdnHost(host) !== host) return null;
     try {
       const url = new URL(rawUrl);
       // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
@@ -56,14 +56,21 @@
     }
   }
 
-  function representationUrls(representation, mode) {
+  // The custom mode uses only the servers picked in the settings. Without any, it works like
+  // the mainland mode.
+  function customServers(mode, customHosts) {
+    return mode === "custom" && Array.isArray(customHosts) ? customHosts.map(core.normalizeCdnHost).filter(Boolean) : [];
+  }
+
+  function representationUrls(representation, mode, customHosts = []) {
     const primary = representation?.baseUrl || representation?.base_url;
     const backup = representation?.backupUrl || representation?.backup_url || representation?.backup_url_list || [];
     const originals = [primary, ...(Array.isArray(backup) ? backup : [])]
       .map(safeMediaUrl)
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index);
-    const hosts = mode === "mainland" ? MAINLAND_HOSTS : OVERSEAS_HOSTS;
+    const custom = customServers(mode, customHosts);
+    const hosts = custom.length ? custom : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
     const donor = originals.find((url) => !isAkamaiUrl(url));
     // Some overseas accounts are given nothing but akamaized.net addresses. That used to leave
     // no node at all in mainland mode and a single one in overseas mode. The nodes accept
@@ -76,9 +83,11 @@
       : hosts.flatMap((host) => originals.map((url) => swapOrdinaryHost(url, host, true))))
       .map(safeMediaUrl)
       .filter(Boolean);
-    const allowedOriginals = mode === "mainland"
-      ? originals.filter((url) => MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()))
-      : originals.filter((url) => !MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()));
+    const allowedOriginals = custom.length
+      ? originals.filter((url) => custom.includes(hostOf(url)))
+      : mode === "overseas"
+        ? originals.filter((url) => !MAINLAND_HOSTS.includes(hostOf(url)))
+        : originals.filter((url) => MAINLAND_HOSTS.includes(hostOf(url)));
     return [...allowedOriginals, ...synthetic].filter((value, index, all) => all.indexOf(value) === index);
   }
 
@@ -168,14 +177,14 @@
     });
   }
 
-  function createResolver(representation, getMode, bans = null) {
+  function createResolver(representation, getMode, bans = null, getCustomHosts = null) {
     const health = new Map();
     let cursor = 0;
     let mediaRangeCount = 0;
     let rangeCursor = 0;
 
     function allUrls() {
-      return representationUrls(representation, getMode?.() === "overseas" ? "overseas" : "mainland");
+      return representationUrls(representation, getMode?.(), getCustomHosts?.() || []);
     }
 
     // Banned nodes are left out. If every node is banned, keep using them rather
@@ -234,7 +243,9 @@
       const now = Date.now();
       const primary = representation?.baseUrl || representation?.base_url;
       const backup = representation?.backupUrl || representation?.backup_url || representation?.backup_url_list || [];
-      const originals = [primary, ...(Array.isArray(backup) ? backup : [])]
+      // The first request also races the addresses Bilibili handed out, except in the custom
+      // mode, which keeps to the picked servers.
+      const originals = customServers(getMode?.(), getCustomHosts?.()).length ? [] : [primary, ...(Array.isArray(backup) ? backup : [])]
         .map(safeMediaUrl)
         .filter(Boolean);
       const candidates = unbanned([...originals, ...allUrls()]

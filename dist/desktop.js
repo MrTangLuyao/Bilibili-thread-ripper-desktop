@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -74,52 +74,36 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     }
   }
 
+  // A server added by hand in the custom CDN mode. Only its host name is kept, and only for
+  // the Bilibili video servers isBilibiliMediaUrl accepts: the signed download addresses
+  // must never be sent to anyone else.
+  function normalizeCdnHost(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text || text.length > 253) return "";
+    let host = "";
+    try { host = new URL(/^[a-z][a-z\d+.-]*:\/\//.test(text) ? text : `https://${text}`).hostname; }
+    catch (_error) { return ""; }
+    return /^[a-z\d](?:[a-z\d-]*[a-z\d])?(?:\.[a-z\d](?:[a-z\d-]*[a-z\d])?)+$/.test(host) && MEDIA_HOST_RE.test(host) ? host : "";
+  }
+
   function normalizeSettings(input) {
     const source = input && typeof input === "object" ? input : {};
     const allowed = [4, 8, 16, 32, 64, 128];
     const requested = Math.trunc(Number(source.concurrency));
-    const danmakuSource = source.danmaku && typeof source.danmaku === "object" ? source.danmaku : {};
-    const allowedAreas = ["quarter", "half", "threeQuarter", "full"];
-    const allowedSpeeds = [1, 2.5, 5, 7.5, 10];
-    const requestedSpeed = Number(danmakuSource.speed);
-    const requestedModes = Array.isArray(danmakuSource.modes)
-      ? [...new Set(danmakuSource.modes.map(Number).filter((value) => [0, 1, 2].includes(value)))]
-      : [0, 1, 2];
-    const requestedColor = String(danmakuSource.color || "").toUpperCase();
-    const danmaku = {
-      visible: danmakuSource.visible !== false,
-      opacity: Math.max(0, Math.min(1, Number.isFinite(Number(danmakuSource.opacity)) ? Number(danmakuSource.opacity) : 0.9)),
-      area: allowedAreas.includes(danmakuSource.area) ? danmakuSource.area : "threeQuarter",
-      fontSize: Math.max(12, Math.min(64, Math.round(Number(danmakuSource.fontSize ?? source.danmakuFontSize) || 25))),
-      speed: allowedSpeeds.includes(requestedSpeed) ? requestedSpeed : 5,
-      modes: requestedModes,
-      antiOverlap: danmakuSource.antiOverlap !== false,
-      synchronousPlayback: danmakuSource.synchronousPlayback !== false,
-      mode: [0, 1, 2].includes(Number(danmakuSource.mode)) ? Number(danmakuSource.mode) : 0,
-      color: /^#[0-9A-F]{6}$/.test(requestedColor) ? requestedColor : "#FFFFFF"
-    };
-    const mode = source.mode === "overseas" ? "overseas" : "mainland";
-    const compatibilityMode = ["a", "b"].includes(String(source.compatibilityMode || "").toLowerCase())
-      ? String(source.compatibilityMode).toLowerCase()
-      : "off";
-    const requestedVolume = Number(source.volume);
     return {
       enabled: source.enabled !== false,
-      mode,
-      compatibilityMode,
+      // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
+      // downloads its media requests.
+      takeover: source.takeover === "compat" ? "compat" : "full",
+      mode: ["overseas", "custom"].includes(source.mode) ? source.mode : "mainland",
+      customHosts: (Array.isArray(source.customHosts) ? source.customHosts : [])
+        .map(normalizeCdnHost)
+        .filter((host, index, all) => host && all.indexOf(host) === index)
+        .slice(0, 32),
       debugNotices: source.debugNotices === true,
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
-      volume: Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 0.7,
-      subtitleLanguage: /^[\w-]+$/i.test(String(source.subtitleLanguage || "off"))
-        ? String(source.subtitleLanguage).slice(0, 48)
-        : "off",
-      subtitleLastLanguage: /^[\w-]+$/i.test(String(source.subtitleLastLanguage || ""))
-        && String(source.subtitleLastLanguage).toLowerCase() !== "off"
-        ? String(source.subtitleLastLanguage).slice(0, 48)
-        : "",
-      danmaku,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
       stallTimeoutMs: 4000,
@@ -132,6 +116,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
     isBilibiliMediaUrl,
+    normalizeCdnHost,
     normalizeSettings,
     parseByteRange,
     parseContentRange,
@@ -188,7 +173,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
   function swapOrdinaryHost(rawUrl, targetHost, allowAkamai = false) {
     if (!allowAkamai && isAkamaiUrl(rawUrl)) return null;
     const host = String(targetHost || "").toLowerCase();
-    if (!GLOBAL_HOSTS.includes(host)) return null;
+    if (core.normalizeCdnHost(host) !== host) return null;
     try {
       const url = new URL(rawUrl);
       // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
@@ -200,14 +185,21 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     }
   }
 
-  function representationUrls(representation, mode) {
+  // The custom mode uses only the servers picked in the settings. Without any, it works like
+  // the mainland mode.
+  function customServers(mode, customHosts) {
+    return mode === "custom" && Array.isArray(customHosts) ? customHosts.map(core.normalizeCdnHost).filter(Boolean) : [];
+  }
+
+  function representationUrls(representation, mode, customHosts = []) {
     const primary = representation?.baseUrl || representation?.base_url;
     const backup = representation?.backupUrl || representation?.backup_url || representation?.backup_url_list || [];
     const originals = [primary, ...(Array.isArray(backup) ? backup : [])]
       .map(safeMediaUrl)
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index);
-    const hosts = mode === "mainland" ? MAINLAND_HOSTS : OVERSEAS_HOSTS;
+    const custom = customServers(mode, customHosts);
+    const hosts = custom.length ? custom : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
     const donor = originals.find((url) => !isAkamaiUrl(url));
     // Some overseas accounts are given nothing but akamaized.net addresses. That used to leave
     // no node at all in mainland mode and a single one in overseas mode. The nodes accept
@@ -220,9 +212,11 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
       : hosts.flatMap((host) => originals.map((url) => swapOrdinaryHost(url, host, true))))
       .map(safeMediaUrl)
       .filter(Boolean);
-    const allowedOriginals = mode === "mainland"
-      ? originals.filter((url) => MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()))
-      : originals.filter((url) => !MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()));
+    const allowedOriginals = custom.length
+      ? originals.filter((url) => custom.includes(hostOf(url)))
+      : mode === "overseas"
+        ? originals.filter((url) => !MAINLAND_HOSTS.includes(hostOf(url)))
+        : originals.filter((url) => MAINLAND_HOSTS.includes(hostOf(url)));
     return [...allowedOriginals, ...synthetic].filter((value, index, all) => all.indexOf(value) === index);
   }
 
@@ -312,14 +306,14 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     });
   }
 
-  function createResolver(representation, getMode, bans = null) {
+  function createResolver(representation, getMode, bans = null, getCustomHosts = null) {
     const health = new Map();
     let cursor = 0;
     let mediaRangeCount = 0;
     let rangeCursor = 0;
 
     function allUrls() {
-      return representationUrls(representation, getMode?.() === "overseas" ? "overseas" : "mainland");
+      return representationUrls(representation, getMode?.(), getCustomHosts?.() || []);
     }
 
     // Banned nodes are left out. If every node is banned, keep using them rather
@@ -378,7 +372,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
       const now = Date.now();
       const primary = representation?.baseUrl || representation?.base_url;
       const backup = representation?.backupUrl || representation?.backup_url || representation?.backup_url_list || [];
-      const originals = [primary, ...(Array.isArray(backup) ? backup : [])]
+      // The first request also races the addresses Bilibili handed out, except in the custom
+      // mode, which keeps to the picked servers.
+      const originals = customServers(getMode?.(), getCustomHosts?.()).length ? [] : [primary, ...(Array.isArray(backup) ? backup : [])]
         .map(safeMediaUrl)
         .filter(Boolean);
       const candidates = unbanned([...originals, ...allUrls()]
@@ -486,6 +482,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     drain() {
       while (this.active < this.limit && this.queue.length) {
         const entry = this.queue.shift();
+        entry.signal?.removeEventListener("abort", entry.cancel);
         if (entry.signal?.aborted) {
           entry.reject(abortError(entry.signal.reason));
           continue;
@@ -511,6 +508,14 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
           priority: Number(priority) || 0,
           sequence: this.sequence++
         };
+        entry.cancel = () => {
+          const index = this.queue.indexOf(entry);
+          if (index < 0) return;
+          this.queue.splice(index, 1);
+          signal.removeEventListener("abort", entry.cancel);
+          reject(abortError(signal.reason));
+        };
+        signal?.addEventListener("abort", entry.cancel, { once: true });
         this.queue.push(entry);
         this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.drain();
@@ -532,6 +537,11 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
         return bytes;
       }
       const reader = response.body.getReader();
+      // Do not rely on fetch implementations to unblock read() after abort. A
+      // pending reader must release its concurrency slot before a quality change.
+      const cancelReader = () => { reader.cancel(controller.signal.reason).catch(() => {}); };
+      controller.signal.addEventListener("abort", cancelReader, { once: true });
+      if (controller.signal.aborted) cancelReader();
       const chunks = [];
       let total = 0;
       let stallTimer = null;
@@ -543,6 +553,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
       try {
         while (true) {
           const { done, value } = await reader.read();
+          if (controller.signal.aborted) throw abortError(controller.signal.reason);
           if (done) break;
           armStall();
           const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -553,6 +564,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
         }
       } finally {
         clearTimeout(stallTimer);
+        controller.signal.removeEventListener("abort", cancelReader);
         reader.releaseLock?.();
       }
       const bytes = new Uint8Array(total);
@@ -608,6 +620,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
       } finally {
         clearTimeout(firstByteTimer);
         clearTimeout(totalTimer);
+        // Invalid headers can reject before readBody obtains a reader. Stop that
+        // response too, otherwise it keeps downloading after releasing the slot.
+        controller.abort();
         signal?.removeEventListener("abort", cancel);
         release();
       }
@@ -825,7 +840,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
         "probe",
         220
       );
-      await options.onOrderedChunk(headResult.bytes, head);
+      await options.onOrderedChunk(headResult.bytes, head, headResult.total);
       if (head.end >= range.end) {
         options.onStartupScheduled?.();
         return {
@@ -858,7 +873,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
           while (ordered[nextOrderedIndex]) {
             const item = ordered[nextOrderedIndex];
             ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex]);
+            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
             nextOrderedIndex += 1;
           }
         });
@@ -933,7 +948,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
           while (ordered[nextOrderedIndex]) {
             const item = ordered[nextOrderedIndex];
             ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex]);
+            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
             nextOrderedIndex += 1;
           }
         });
@@ -968,7 +983,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
       };
     }
 
-    return Object.freeze({ downloadRange });
+    return Object.freeze({ downloadRange, applySettings: () => semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency) });
   }
 
   root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader });
@@ -1441,7 +1456,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
   const REVISION = 2, UPGRADE = { mode: "mainland", concurrency: 8, errorNotices: false };
   const normalize = value => {
     const s = root.__BILI_RANGE_CORE__.normalizeSettings(value || {});
-    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
+    // mode "custom" uses only the servers in customHosts; the shared core keeps Bilibili's
+    // video servers and drops anything else.
+    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
   };
   let current;
   try {
@@ -1450,13 +1467,13 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     current = normalize(outdated ? { ...saved, ...UPGRADE } : saved);
     if (outdated) localStorage.setItem(KEY, JSON.stringify(current));
   } catch (_) { current = normalize({}); }
-  const emit = () => listeners.forEach(fn => { try { fn({ ...current, debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
+  const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.1.5-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.2.3-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
-    getSettings: () => ({ ...current, debugCategories: { ...current.debugCategories } }),
+    getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
     setSettings(patch) {
       const next = normalize({ ...current, ...patch });
       localStorage.setItem(KEY, JSON.stringify(next)); // Failure must not pretend to save.
@@ -1576,7 +1593,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     if (!resolvers.has(key)) {
       const rep = representations.get(mediaKey(url));
       const exact = rep && [rep.baseUrl, rep.base_url, ...(rep.backupUrl || rep.backup_url || [])].includes(url);
-      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans);
+      // Mode and custom servers are read for every request, so a change in the settings
+      // applies to the next downloads of the video that is playing.
+      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans, () => api.getSettings().customHosts);
       // When no other node can take this address, keep the one the client asked for. An
       // akamaized.net-only address goes to other nodes too; the ban list drops refused ones.
       resolvers.set(key, Object.freeze({ ...resolver,
@@ -1853,6 +1872,11 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     #btr-desktop-settings input{accent-color:#d45b88}#btr-desktop-settings input[type=checkbox]{width:16px;height:16px;vertical-align:middle;margin:0 8px 0 0}
     #btr-desktop-settings input[type=range]{width:min(290px,55vw)}#btr-desktop-settings output{min-width:35px;color:#ef77a3;font-weight:600}
     #btr-desktop-settings .btr-debug-options{display:grid;grid-template-columns:repeat(2,minmax(145px,1fr));gap:12px;max-width:440px;padding:12px 0 6px}
+    #btr-desktop-settings .btr-custom{margin:0 0 8px 148px;max-width:520px}#btr-desktop-settings .btr-host-title{margin:14px 0 8px;color:var(--text2,#b3bfca);font-size:13px}
+    #btr-desktop-settings .btr-host-list{display:grid;grid-template-columns:repeat(2,minmax(230px,1fr));gap:9px 16px;font-size:12px}#btr-desktop-settings .btr-host-list label{overflow-wrap:anywhere;cursor:pointer}
+    #btr-desktop-settings .btr-host-add{display:flex;gap:8px;margin:8px 0}#btr-desktop-settings input[type=text]{flex:1;min-width:0;border:1px solid var(--line_regular,#353638);border-radius:5px;background:var(--bg3,#252729);color:inherit;padding:7px 10px;font:inherit;font-size:12px}
+    #btr-desktop-settings .btr-manual-host{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0;font-size:12px;overflow-wrap:anywhere}#btr-desktop-settings .btr-manual-host button{padding:2px 9px}
+    #btr-desktop-settings .btr-host-error{color:#f77979}#btr-desktop-settings .btr-host-error:empty{display:none}
     #btr-desktop-settings [hidden]{display:none!important}#btr-desktop-settings .btr-note{font-size:12px;color:var(--text3,#9499a0);line-height:1.7;margin:8px 0}
     #btr-desktop-settings .btr-save-error{color:#f77979} .settings_catalog.btr-current .settings_catalog--item:not(#btr-desktop-nav){color:var(--text2,#b3bfca)!important}.settings_catalog.btr-current .settings_catalog--item:not(#btr-desktop-nav):before{display:none!important}
     #btr-desktop-nav{order:-1}.settings_catalog.btr-current #btr-desktop-nav{color:#ef77a3}.settings_catalog.btr-current #btr-desktop-nav:before{display:block!important}
@@ -1868,7 +1892,16 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
       panel = document.createElement("section"); panel.id = "btr-desktop-settings"; panel.className = "settings_content--item";
       panel.innerHTML = `<h4>BTR 线程撕裂者<span class="btr-version">${api.version}</span></h4>
         <div class="btr-row"><label><input type="checkbox" data-setting="enabled">启用多线程加速</label></div>
-        <div class="btr-row"><span class="btr-label">CDN 模式</span><button type="button" data-mode="mainland">大陆 CDN</button><button type="button" data-mode="overseas">海外 CDN</button></div>
+        <div class="btr-row"><span class="btr-label">CDN 模式</span><button type="button" data-mode="mainland">大陆 CDN</button><button type="button" data-mode="overseas">海外 CDN</button><button type="button" data-mode="custom">自定义</button></div>
+        <div class="btr-custom" hidden>
+          <div class="btr-note btr-custom-empty">还没选服务器，暂时按大陆 CDN 下载。</div>
+          <div class="btr-host-groups"></div>
+          <div class="btr-host-title">手动添加</div>
+          <div class="btr-manual-hosts"></div>
+          <div class="btr-host-add"><input type="text" id="btr-desktop-host" placeholder="例如 upos-sz-mirrorali.bilivideo.com" spellcheck="false" autocomplete="off" aria-label="服务器地址"><button type="button" id="btr-desktop-host-add">添加</button></div>
+          <div class="btr-note btr-host-error" role="alert"></div>
+          <div class="btr-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</div>
+        </div>
         <div class="btr-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="errorNotices">显示错误</label><label><input type="checkbox" data-setting="debugNotices">Debug 模式</label></div>
         <div class="btr-debug-wrap" hidden><div class="btr-row"><button type="button" data-select="all">全选</button><button type="button" data-select="none">全不选</button></div><div class="btr-debug-options"></div></div>
@@ -1879,14 +1912,41 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
         const label = document.createElement("label"), input = document.createElement("input");
         input.type = "checkbox"; input.dataset.category = key; label.append(input, title); panel.querySelector(".btr-debug-options").append(label);
       }
+      // The servers of the custom CDN mode: the known ones to tick, others typed in.
+      const core = root.__BILI_RANGE_CORE__, cdn = root.__BILI_CDN_RESOLVER_FACTORY__, maxHosts = 32;
+      const hostGroups = [["大陆节点", cdn.MAINLAND_HOSTS], ["海外节点", cdn.OVERSEAS_HOSTS]];
+      const knownHosts = hostGroups.flatMap(([, hosts]) => hosts);
+      for (const [title, hosts] of hostGroups) {
+        const heading = document.createElement("div"); heading.className = "btr-host-title"; heading.textContent = title;
+        const list = document.createElement("div"); list.className = "btr-host-list";
+        for (const host of hosts) {
+          const label = document.createElement("label"), input = document.createElement("input");
+          input.type = "checkbox"; input.dataset.host = host; label.append(input, host); list.append(label);
+        }
+        panel.querySelector(".btr-host-groups").append(heading, list);
+      }
+      const hostError = panel.querySelector(".btr-host-error"), hostInput = panel.querySelector("#btr-desktop-host");
       general.before(panel);
       const threadOptions = [4, 8, 16, 32, 64, 128];
       const save = patch => {
         try { api.setSettings(patch); panel.querySelector(".btr-save-error").textContent = ""; }
         catch (_) { panel.querySelector(".btr-save-error").textContent = "设置保存失败，请检查客户端的数据目录是否可写。"; }
       };
+      const addHost = () => {
+        const host = core.normalizeCdnHost(hostInput.value), hosts = api.getSettings().customHosts;
+        if (!host) hostError.textContent = "这不是 B 站的视频服务器地址。";
+        else if (hosts.includes(host)) hostError.textContent = "这个服务器已经在列表里了。";
+        else if (hosts.length >= maxHosts) hostError.textContent = `最多选 ${maxHosts} 个服务器。`;
+        else { hostError.textContent = ""; hostInput.value = ""; save({ customHosts: [...hosts, host] }); }
+      };
+      hostInput.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); addHost(); } });
       panel.addEventListener("change", event => {
         const input = event.target;
+        if (input.dataset.host) {
+          const hosts = api.getSettings().customHosts.filter(host => host !== input.dataset.host);
+          if (input.checked && hosts.length >= maxHosts) { input.checked = false; hostError.textContent = `最多选 ${maxHosts} 个服务器。`; return; }
+          hostError.textContent = ""; save({ customHosts: input.checked ? [...hosts, input.dataset.host] : hosts });
+        }
         if (input.dataset.setting) save({ [input.dataset.setting]: input.checked });
         if (input.dataset.category) save({ debugCategories: Object.fromEntries([...panel.querySelectorAll("[data-category]")].map(x => [x.dataset.category, x.checked])) });
         if (input.id === "btr-desktop-threads") save({ concurrency: threadOptions[Number(input.value)] });
@@ -1895,6 +1955,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
       panel.addEventListener("click", event => {
         const button = event.target.closest("button"); if (!button) return;
         if (button.id === "btr-desktop-check-update") api.checkUpdate();
+        if (button.id === "btr-desktop-host-add") addHost();
+        if (button.dataset.removeHost) save({ customHosts: api.getSettings().customHosts.filter(host => host !== button.dataset.removeHost) });
         if (button.dataset.mode) save({ mode: button.dataset.mode });
         if (button.dataset.select) save({ debugCategories: Object.fromEntries(Object.keys(api.categories).map(key => [key, button.dataset.select === "all"])) });
       });
@@ -1902,6 +1964,15 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
         panel.querySelectorAll("[data-setting]").forEach(x => { x.checked = settings[x.dataset.setting]; });
         panel.querySelectorAll("[data-category]").forEach(x => { x.checked = settings.debugCategories[x.dataset.category] !== false; });
         panel.querySelectorAll("[data-mode]").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === settings.mode)));
+        panel.querySelector(".btr-custom").hidden = settings.mode !== "custom";
+        panel.querySelector(".btr-custom-empty").hidden = settings.customHosts.length > 0;
+        panel.querySelectorAll("[data-host]").forEach(x => { x.checked = settings.customHosts.includes(x.dataset.host); });
+        panel.querySelector(".btr-manual-hosts").replaceChildren(...settings.customHosts.filter(host => !knownHosts.includes(host)).map(host => {
+          const row = document.createElement("div"), text = document.createElement("span"), remove = document.createElement("button");
+          row.className = "btr-manual-host"; text.textContent = host;
+          remove.type = "button"; remove.dataset.removeHost = host; remove.textContent = "删除"; remove.setAttribute("aria-label", `删除 ${host}`);
+          row.append(text, remove); return row;
+        }));
         panel.querySelector("input[type=range]").value = String(Math.max(0, threadOptions.indexOf(settings.concurrency)));
         panel.querySelector("output").textContent = String(settings.concurrency);
         panel.querySelector(".btr-debug-wrap").hidden = !settings.debugNotices;
@@ -1956,6 +2027,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     #${id} .btr-native-setting-title{margin:0 0 8px;color:#fff}
     #${id} .bui-radio-group{display:flex!important;flex-wrap:wrap!important;gap:8px!important;margin:0!important}
     #${id} .bui-radio-item{margin:0!important}
+    #${id} .btr-custom-hint{margin:-8px 0 16px;color:hsla(0,0%,100%,.6);line-height:1.5}
     #${id} .btr-save-error{color:#ff8585;line-height:1.5}
   `;
   (document.head || document.documentElement).append(style);
@@ -1982,8 +2054,11 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     if (panel?.parentElement === target) return;
     unsubscribe?.(); panel?.remove();
     panel = document.createElement("div"); panel.id = id;
+    // The servers of the custom mode are picked in the client's settings page; this menu is too small for the list.
+    const hint = document.createElement("div"); hint.className = "btr-custom-hint"; hint.hidden = true;
     panel.append(
-      group("线程撕裂者 CDN", "mode", [["mainland", "大陆 CDN"], ["overseas", "海外 CDN"]]),
+      group("线程撕裂者 CDN", "mode", [["mainland", "大陆 CDN"], ["overseas", "海外 CDN"], ["custom", "自定义"]]),
+      hint,
       group("并发线程", "concurrency", threads.map(value => [value, String(value)]))
     );
     const error = document.createElement("div"); error.className = "btr-save-error"; error.setAttribute("role", "status"); panel.append(error);
@@ -1997,6 +2072,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.1.5-d1","adapterRevision":1};
     target.insertBefore(panel, target.querySelector(".bpx-player-ctrl-setting-others") || target.firstChild);
     unsubscribe = api.onSettings(settings => {
       for (const input of panel.querySelectorAll("[data-btr-setting]")) input.checked = input.value === String(settings[input.dataset.btrSetting]);
+      hint.hidden = settings.mode !== "custom";
+      hint.textContent = settings.customHosts.length
+        ? `已选 ${settings.customHosts.length} 个服务器，在客户端「设置 → 线程撕裂者」里增减。`
+        : "还没选服务器，暂时按大陆 CDN 下载。请到客户端「设置 → 线程撕裂者」里选择。";
     });
   }
   const observer = new MutationObserver(() => { if (!scheduled) { scheduled = true; requestAnimationFrame(mount); } });

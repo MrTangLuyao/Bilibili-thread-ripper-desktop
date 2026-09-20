@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "0.9.1.5-d1",
-  "baseVersion": "0.9.1.5",
+  "version": "0.9.2.3-d1",
+  "baseVersion": "0.9.2.3",
   "adapterRevision": 1,
   "legacyClientVersions": ["1.18.0"],
   "update": {

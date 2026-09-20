@@ -98,7 +98,9 @@
     if (!resolvers.has(key)) {
       const rep = representations.get(mediaKey(url));
       const exact = rep && [rep.baseUrl, rep.base_url, ...(rep.backupUrl || rep.backup_url || [])].includes(url);
-      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans);
+      // Mode and custom servers are read for every request, so a change in the settings
+      // applies to the next downloads of the video that is playing.
+      const resolver = resolverFactory.createResolver(exact ? rep : { baseUrl: url }, () => api.getSettings().mode, bans, () => api.getSettings().customHosts);
       // When no other node can take this address, keep the one the client asked for. An
       // akamaized.net-only address goes to other nodes too; the ban list drops refused ones.
       resolvers.set(key, Object.freeze({ ...resolver,

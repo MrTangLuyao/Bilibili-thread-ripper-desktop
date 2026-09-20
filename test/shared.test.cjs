@@ -214,3 +214,30 @@ test("a piece with a single address survives failed replies instead of ending th
   const result=await downloader.downloadRange(range,resolver,{parallel:true,kind:"video"});
   assert.equal(result.bytes.length,range.length);assert.equal(requests,3);
 });
+
+test("the custom CDN mode uses only the servers picked in the settings, and only Bilibili's",()=>{
+  const {core,cdn}=load();
+  assert.equal(core.normalizeCdnHost(" https://CN-GDFS-CT-01-01.bilivideo.com:4483/x?y=1 "),"cn-gdfs-ct-01-01.bilivideo.com");
+  for(const bad of ["example.com","bilivideo.com.example.net","https://1.2.3.4/","upos sz.bilivideo.com",""])assert.equal(core.normalizeCdnHost(bad),"",bad);
+  const settings=core.normalizeSettings({mode:"custom",customHosts:["upos-sz-mirrorcos.bilivideo.com","example.com","UPOS-SZ-MIRRORCOS.bilivideo.com","cn-gdfs-ct-01-01.bilivideo.com"]});
+  assert.equal(settings.mode,"custom");
+  assert.deepEqual(Array.from(settings.customHosts),["upos-sz-mirrorcos.bilivideo.com","cn-gdfs-ct-01-01.bilivideo.com"]);
+  assert.equal(core.normalizeSettings({mode:"somewhere"}).mode,"mainland");
+  // The takeover mode: full replaces the playback core, compat only downloads for it.
+  assert.equal(core.normalizeSettings({}).takeover,"full");assert.equal(core.normalizeSettings({takeover:"compat"}).takeover,"compat");assert.equal(core.normalizeSettings({takeover:"a"}).takeover,"full");
+  const hostsOf=list=>Array.from(list,url=>new URL(url).hostname);
+  let hosts=Array.from(settings.customHosts);
+  const resolver=cdn.createResolver({baseUrl:mediaUrl("upos-sz-mirrorali.bilivideo.com")},()=>"custom",null,()=>hosts);
+  assert.deepEqual(hostsOf(resolver.urls()),["upos-sz-mirrorcos.bilivideo.com","cn-gdfs-ct-01-01.bilivideo.com"]);
+  // The first request of a video does not race Bilibili's own address either.
+  assert.deepEqual(hostsOf(resolver.startupCandidates()),["upos-sz-mirrorcos.bilivideo.com","cn-gdfs-ct-01-01.bilivideo.com"]);
+  // An address Bilibili handed out on one of the picked servers is kept as it is.
+  const own=cdn.createResolver({baseUrl:mediaUrl("upos-sz-mirrorcos.bilivideo.com")},()=>"custom",null,()=>hosts);
+  assert.deepEqual(hostsOf(own.urls()),["upos-sz-mirrorcos.bilivideo.com","cn-gdfs-ct-01-01.bilivideo.com"]);
+  // With nothing picked the mainland nodes are used, and a change applies at once.
+  hosts=[];
+  assert.deepEqual(hostsOf(resolver.urls()),Array.from(cdn.MAINLAND_HOSTS));
+  assert.equal(hostsOf(resolver.startupCandidates())[0],"upos-sz-mirrorali.bilivideo.com");
+  hosts=["upos-sz-mirrorbos.bilivideo.com"];
+  assert.deepEqual(hostsOf(resolver.urls()),["upos-sz-mirrorbos.bilivideo.com"]);
+});

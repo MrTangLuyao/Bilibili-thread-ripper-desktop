@@ -71,52 +71,36 @@
     }
   }
 
+  // A server added by hand in the custom CDN mode. Only its host name is kept, and only for
+  // the Bilibili video servers isBilibiliMediaUrl accepts: the signed download addresses
+  // must never be sent to anyone else.
+  function normalizeCdnHost(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text || text.length > 253) return "";
+    let host = "";
+    try { host = new URL(/^[a-z][a-z\d+.-]*:\/\//.test(text) ? text : `https://${text}`).hostname; }
+    catch (_error) { return ""; }
+    return /^[a-z\d](?:[a-z\d-]*[a-z\d])?(?:\.[a-z\d](?:[a-z\d-]*[a-z\d])?)+$/.test(host) && MEDIA_HOST_RE.test(host) ? host : "";
+  }
+
   function normalizeSettings(input) {
     const source = input && typeof input === "object" ? input : {};
     const allowed = [4, 8, 16, 32, 64, 128];
     const requested = Math.trunc(Number(source.concurrency));
-    const danmakuSource = source.danmaku && typeof source.danmaku === "object" ? source.danmaku : {};
-    const allowedAreas = ["quarter", "half", "threeQuarter", "full"];
-    const allowedSpeeds = [1, 2.5, 5, 7.5, 10];
-    const requestedSpeed = Number(danmakuSource.speed);
-    const requestedModes = Array.isArray(danmakuSource.modes)
-      ? [...new Set(danmakuSource.modes.map(Number).filter((value) => [0, 1, 2].includes(value)))]
-      : [0, 1, 2];
-    const requestedColor = String(danmakuSource.color || "").toUpperCase();
-    const danmaku = {
-      visible: danmakuSource.visible !== false,
-      opacity: Math.max(0, Math.min(1, Number.isFinite(Number(danmakuSource.opacity)) ? Number(danmakuSource.opacity) : 0.9)),
-      area: allowedAreas.includes(danmakuSource.area) ? danmakuSource.area : "threeQuarter",
-      fontSize: Math.max(12, Math.min(64, Math.round(Number(danmakuSource.fontSize ?? source.danmakuFontSize) || 25))),
-      speed: allowedSpeeds.includes(requestedSpeed) ? requestedSpeed : 5,
-      modes: requestedModes,
-      antiOverlap: danmakuSource.antiOverlap !== false,
-      synchronousPlayback: danmakuSource.synchronousPlayback !== false,
-      mode: [0, 1, 2].includes(Number(danmakuSource.mode)) ? Number(danmakuSource.mode) : 0,
-      color: /^#[0-9A-F]{6}$/.test(requestedColor) ? requestedColor : "#FFFFFF"
-    };
-    const mode = source.mode === "overseas" ? "overseas" : "mainland";
-    const compatibilityMode = ["a", "b"].includes(String(source.compatibilityMode || "").toLowerCase())
-      ? String(source.compatibilityMode).toLowerCase()
-      : "off";
-    const requestedVolume = Number(source.volume);
     return {
       enabled: source.enabled !== false,
-      mode,
-      compatibilityMode,
+      // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
+      // downloads its media requests.
+      takeover: source.takeover === "compat" ? "compat" : "full",
+      mode: ["overseas", "custom"].includes(source.mode) ? source.mode : "mainland",
+      customHosts: (Array.isArray(source.customHosts) ? source.customHosts : [])
+        .map(normalizeCdnHost)
+        .filter((host, index, all) => host && all.indexOf(host) === index)
+        .slice(0, 32),
       debugNotices: source.debugNotices === true,
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
-      volume: Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 0.7,
-      subtitleLanguage: /^[\w-]+$/i.test(String(source.subtitleLanguage || "off"))
-        ? String(source.subtitleLanguage).slice(0, 48)
-        : "off",
-      subtitleLastLanguage: /^[\w-]+$/i.test(String(source.subtitleLastLanguage || ""))
-        && String(source.subtitleLastLanguage).toLowerCase() !== "off"
-        ? String(source.subtitleLastLanguage).slice(0, 48)
-        : "",
-      danmaku,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
       stallTimeoutMs: 4000,
@@ -129,6 +113,7 @@
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
     isBilibiliMediaUrl,
+    normalizeCdnHost,
     normalizeSettings,
     parseByteRange,
     parseContentRange,

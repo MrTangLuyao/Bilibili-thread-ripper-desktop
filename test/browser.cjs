@@ -77,6 +77,42 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(await page.locator('[name="btr-desktop-player-mode"][value="overseas"]').isChecked(), true);
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({concurrency:16,mode:"mainland"}));
     console.log("PASS native player CDN/thread settings persist, synchronize and remount after switching");
+    // Custom CDN: known servers are ticked, others typed in; only Bilibili's video servers are accepted.
+    assert.equal(await page.locator(".btr-custom").isVisible(), false);
+    await page.locator('#btr-desktop-settings [data-mode="custom"]').click();
+    assert.equal(await page.locator('#btr-desktop-settings [data-mode="custom"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator(".btr-custom").isVisible(), true);
+    assert.equal(await page.locator(".btr-custom-empty").isVisible(), true);
+    assert.equal(await page.locator("#btr-desktop-settings [data-host]").count(), 12);
+    assert.equal(await page.locator('[name="btr-desktop-player-mode"][value="custom"]').isChecked(), true);
+    assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /还没选服务器/);
+    await page.locator('[data-host="upos-sz-mirrorcos.bilivideo.com"]').check();
+    assert.equal(await page.locator(".btr-custom-empty").isVisible(), false);
+    for (const [typed, message] of [["https://example.com/a.m4s", "这不是 B 站的视频服务器地址。"], ["upos-sz-mirrorcos.bilivideo.com", "这个服务器已经在列表里了。"]]) {
+      await page.locator("#btr-desktop-host").fill(typed); await page.locator("#btr-desktop-host-add").click();
+      assert.equal(await page.locator(".btr-host-error").textContent(), message);
+    }
+    await page.locator("#btr-desktop-host").fill("https://UPOS-sz-mirrorcoso1.bilivideo.com/upgcxcode/x.m4s?sign=1"); await page.locator("#btr-desktop-host").press("Enter");
+    assert.equal(await page.locator(".btr-host-error").textContent(), "");
+    assert.equal(await page.locator("#btr-desktop-host").inputValue(), "");
+    assert.equal(await page.locator(".btr-manual-host span").textContent(), "upos-sz-mirrorcoso1.bilivideo.com");
+    await second.waitForFunction(() => JSON.stringify(__BTR_DESKTOP__.getSettings().customHosts) === '["upos-sz-mirrorcos.bilivideo.com","upos-sz-mirrorcoso1.bilivideo.com"]');
+    assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /已选 2 个服务器/);
+    await page.reload();
+    assert.equal(await page.locator('[data-host="upos-sz-mirrorcos.bilivideo.com"]').isChecked(), true);
+    assert.equal(await page.locator(".btr-manual-host").count(), 1);
+    await page.locator("#btr-desktop-settings").screenshot({path:path.join(root,"test-output","custom-cdn.png")});
+    await page.locator(".btr-manual-host button").click();
+    assert.equal(await page.locator(".btr-manual-host").count(), 0);
+    assert.deepEqual(await page.evaluate(() => __BTR_DESKTOP__.getSettings().customHosts), ["upos-sz-mirrorcos.bilivideo.com"]);
+    await page.evaluate(() => __BTR_DESKTOP__.setSettings({ customHosts: Array.from({ length: 40 }, (_, i) => `upos-sz-test${i}.bilivideo.com`).concat("evil.example.com") }));
+    assert.equal(await page.evaluate(() => __BTR_DESKTOP__.getSettings().customHosts.length), 32);
+    await page.locator('[data-host="upos-sz-mirrorali.bilivideo.com"]').click();
+    assert.equal(await page.locator('[data-host="upos-sz-mirrorali.bilivideo.com"]').isChecked(), false);
+    assert.equal(await page.locator(".btr-host-error").textContent(), "最多选 32 个服务器。");
+    await page.evaluate(() => __BTR_DESKTOP__.setSettings({ mode: "mainland", customHosts: [] }));
+    assert.equal(await page.locator(".btr-custom").isVisible(), false);
+    console.log("PASS custom CDN: known and typed servers, refusal of other sites, limit of 32, persistence and synchronization");
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"available",message:"发现 0.9.1.1-d2",manifest:{version:"0.9.1.1-d2"}}},location.origin));
     await page.locator("#btr-desktop-install-update").waitFor({state:"visible"});
     assert.equal(await page.locator("#btr-desktop-install-update").textContent(), "更新到 0.9.1.1-d2");
@@ -156,6 +192,45 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.deepEqual(await page.evaluate(() => { __BTR_DESKTOP__.transport.switchRoute("video-ban:2"); return __BTR_DESKTOP__.transport.snapshot().bannedHosts; }), []);
     deadHost = "";
     console.log("PASS a node with two 0 KiB replies is banned for the current video, skipped afterwards and restored on the next video");
+    // Custom mode asks only the picked servers, not even the one the client named. Going back
+    // to another mode applies to the next request of the same video.
+    const picked = ["upos-sz-mirrorcos.bilivideo.com", "upos-sz-mirrorcoso1.bilivideo.com"];
+    await page.waitForTimeout(300);
+    const hitsSince = before => [...hostHits].filter(([host, count]) => count > (before.get(host) || 0)).map(([host]) => host).sort();
+    let before = new Map(hostHits);
+    const custom = await page.evaluate(async hosts => {
+      __BTR_DESKTOP__.transport.switchRoute("video-custom:1");
+      __BTR_DESKTOP__.setSettings({ mode: "custom", customHosts: hosts });
+      let bytes = 0;
+      for (const range of ["0-1048575", "1048576-2097151", "2097152-3145727"]) bytes += (await (await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/custom.m4s", { headers: { Range: `bytes=${range}` } })).arrayBuffer()).byteLength;
+      return { bytes, fallbacks: __BTR_DESKTOP__.transport.snapshot().fallbackRequests };
+    }, picked);
+    assert.deepEqual(custom, { bytes: 3 * 1048576, fallbacks: 0 });
+    await page.waitForTimeout(300);
+    assert.deepEqual(hitsSince(before), picked);
+    before = new Map(hostHits);
+    const back = await page.evaluate(async () => {
+      __BTR_DESKTOP__.setSettings({ mode: "mainland" });
+      return (await (await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/custom.m4s", { headers: { Range: "bytes=3145728-4194303" } })).arrayBuffer()).byteLength;
+    });
+    assert.equal(back, 1048576);
+    await page.waitForTimeout(300);
+    assert.ok(hitsSince(before).some(host => !picked.includes(host)), "mainland mode must use its own nodes again");
+    assert.ok(!hitsSince(before).includes(picked[1]), "a typed server must not be asked outside the custom mode");
+    // Custom mode without any server works like the mainland mode.
+    before = new Map(hostHits);
+    const empty = await page.evaluate(async () => {
+      __BTR_DESKTOP__.transport.switchRoute("video-custom:2");
+      __BTR_DESKTOP__.setSettings({ mode: "custom", customHosts: [] });
+      const length = (await (await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/custom-empty.m4s", { headers: { Range: "bytes=0-1048575" } })).arrayBuffer()).byteLength;
+      const snapshot = __BTR_DESKTOP__.transport.snapshot();
+      __BTR_DESKTOP__.setSettings({ mode: "mainland" });
+      return { length, fallbacks: snapshot.fallbackRequests };
+    });
+    assert.deepEqual(empty, { length: 1048576, fallbacks: 0 });
+    await page.waitForTimeout(300);
+    assert.ok(hitsSince(before).length > 1);
+    console.log("PASS custom CDN asks only the picked servers; a mode change applies to the next request; no server picked works like mainland");
     failure = true;
     const fallback = await page.evaluate(async () => {
       const response = await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/fallback.m4s", { headers: { Range: "bytes=0-4095", "X-Btr-Native-Fallback": "yes" } });
