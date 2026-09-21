@@ -3,7 +3,7 @@ const fs=require("node:fs"),path=require("node:path"),{spawnSync}=require("node:
 const {sha}=require("./asar.cjs"),{RAW,VERSION}=require("./update-provider.cjs");
 const root=path.resolve(__dirname,".."),config=JSON.parse(fs.readFileSync(path.join(root,"desktop.json")));
 if(!VERSION.test(config.version))throw Error("Invalid desktop version");
-const files=["BTR_Desktop.exe","BTR_Guard.exe","desktop.json","install.ps1","force-update.ps1","README.md","LICENSE","docs/update-interface.md","docs/verification.md","docs/images/system-settings.png","docs/images/player-settings.png","dist/desktop.js","dist/payload.json","src/bootstrap.cjs","src/update-main.cjs","tools/asar.cjs","tools/client-package.cjs","tools/update-provider.cjs","tools/https-json.cjs"];
+const files=["BTR_Desktop.exe","BTR_Guard.exe","desktop.json","install.ps1","force-update.ps1","README.md","difference.md","LICENSE","docs/update-interface.md","docs/verification.md","docs/images/system-settings.png","docs/images/player-settings.png","dist/desktop.js","dist/payload.json","src/bootstrap.cjs","src/update-main.cjs","tools/asar.cjs","tools/client-package.cjs","tools/update-provider.cjs","tools/https-json.cjs"];
 const staging=fs.mkdtempSync(path.join(root,"release-stage-")),directory=path.join(staging,"BTR_Desktop");
 try {
   for(const file of files){const dest=path.join(directory,file);fs.mkdirSync(path.dirname(dest),{recursive:true});fs.copyFileSync(path.join(root,file),dest);}

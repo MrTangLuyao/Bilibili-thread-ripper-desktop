@@ -269,5 +269,76 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     await legacy.close();
     assert.deepEqual(errors, []);
     console.log("PASS old settings move once to mainland CDN, 8 threads and hidden errors; later choices are kept");
+    // 0.9.3.0: a piece that stops midway is finished by another node from where it stopped.
+    // One node sends 70 % of every larger request and then hangs. The client's XHR must still
+    // get exact bytes, and its progress must never go backwards or past the end while pieces
+    // are resumed, copied and cancelled underneath.
+    const stalling = await browser.newContext();
+    await stalling.route(/https:\/\/.*\.bilivideo\.com\//, async route => {
+      const match = /bytes=(\d+)-(\d+)/.exec(route.request().headers().range || "");
+      if (!match) return route.fulfill({ status: 200, body: "native" });
+      const start = Number(match[1]), end = Number(match[2]), bytes = Buffer.alloc(end - start + 1);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = (start + i) % 251;
+      await route.fulfill({ status: 206, headers: { "Content-Range": `bytes ${start}-${end}/8388608`, "Content-Length": String(bytes.length), "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Content-Range,Content-Length", "Content-Type": "video/mp4" }, body: bytes });
+    });
+    await stalling.addInitScript(() => {
+      const realFetch = window.fetch.bind(window);
+      window.__stallLog = [];
+      window.fetch = (input, init = {}) => {
+        const url = String(typeof input === "string" || input instanceof URL ? input : input.url);
+        const match = /bytes=(\d+)-(\d+)/.exec(new Headers(init.headers || {}).get("range") || "");
+        if (!match) return realFetch(input, init);
+        const start = Number(match[1]), end = Number(match[2]), length = end - start + 1;
+        // A request for the rest of a piece the stalling node left unfinished.
+        if (window.__stallLog.some(item => item.end === end && start > item.start)) window.__tails = (window.__tails || 0) + 1;
+        if (new URL(url).hostname !== "upos-sz-mirrorhw.bilivideo.com" || length < 65536) return realFetch(input, init);
+        window.__stallLog.push({ start, end });
+        const stop = Math.floor(length * 0.7);
+        let sent = 0;
+        const body = new ReadableStream({
+          pull(controller) {
+            if (sent >= stop) return new Promise((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+            const size = Math.min(16384, stop - sent), chunk = new Uint8Array(size);
+            for (let i = 0; i < size; i++) chunk[i] = (start + sent + i) % 251;
+            sent += size;
+            controller.enqueue(chunk);
+          }
+        });
+        return Promise.resolve(new Response(body, { status: 206, headers: { "Content-Range": `bytes ${start}-${end}/8388608`, "Content-Type": "video/mp4" } }));
+      };
+    });
+    const stalled = await stalling.newPage(); stalled.on("pageerror", error => errors.push(error.message));
+    await stalled.goto(origin);
+    const resumed = await stalled.evaluate(() => new Promise((resolve, reject) => {
+      __BTR_DESKTOP__.setSettings({ concurrency: 32 });
+      __BTR_DESKTOP__.transport.switchRoute("video-stall:1");
+      const started = performance.now();
+      const run = (index, results) => {
+        const x = new XMLHttpRequest(), loaded = [];
+        x.open("GET", `https://upos-sz-mirrorali.bilivideo.com/upgcxcode/stall-${index}.m4s`); x.responseType = "arraybuffer";
+        const first = index * 2097152; x.setRequestHeader("Range", `bytes=${first}-${first + 2097151}`);
+        x.onprogress = event => loaded.push(event.loaded);
+        x.onerror = reject;
+        x.onload = () => {
+          results.push({ exact: new Uint8Array(x.response).every((v, i) => v === (first + i) % 251), length: x.response.byteLength, status: x.status, loaded });
+          if (index < 2) run(index + 1, results);
+          else resolve({ results, ms: performance.now() - started, stallRequests: window.__stallLog.length, tails: window.__tails || 0, snapshot: __BTR_DESKTOP__.transport.snapshot() });
+        };
+        x.send();
+      };
+      run(0, []);
+    }));
+    for (const item of resumed.results) {
+      assert.equal(item.exact, true); assert.equal(item.length, 2097152); assert.equal(item.status, 206);
+      assert.ok(item.loaded.length > 1, "progress was reported while the pieces arrived");
+      assert.ok(item.loaded.every((value, i) => value <= 2097152 && (i === 0 || value >= item.loaded[i - 1])), `progress only moves forward: ${item.loaded.slice(-6).join(",")}`);
+    }
+    assert.ok(resumed.stallRequests > 0, "the stalling node was used");
+    assert.ok(resumed.tails > 0, "an unfinished piece was completed from where it stopped, not downloaded again");
+    assert.equal(resumed.snapshot.fallbackRequests, 0);
+    assert.ok(resumed.ms < 15000, `three 2 MiB ranges with a stalling node took ${Math.round(resumed.ms)} ms`);
+    await stalling.close();
+    assert.deepEqual(errors, []);
+    console.log("PASS a node that stalls midway: exact bytes, no fallback, XHR progress never goes backwards;", resumed.stallRequests, "stalled requests,", resumed.tails, "resumed,", Math.round(resumed.ms), "ms");
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); server.close(); process.exitCode = 1; });

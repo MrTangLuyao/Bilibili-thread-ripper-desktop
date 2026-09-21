@@ -112,6 +112,25 @@
     }
     return resolvers.get(key);
   }
+  // A request of 64 to 128 KiB is a single piece, and since 0.9.3.0 the downloader gives a
+  // single piece to the fastest node every time. The client asks for sound in a run of such
+  // requests, several at once, and they would all queue on that one node. Their first node is
+  // picked in turns here instead; a node far slower than the best is left out, and the
+  // copies that rescue a slow piece are still chosen by the downloader.
+  const turnViews = new WeakMap();
+  function inTurns(resolver) {
+    if (!turnViews.has(resolver)) {
+      let turn = 0;
+      const speed = typeof resolver.speed === "function" ? resolver.speed : () => 0;
+      turnViews.set(resolver, Object.freeze({ ...resolver, rangeCandidates() {
+        const all = resolver.rangeCandidates(), best = Math.max(0, ...all.map(speed));
+        const usable = all.filter(url => !speed(url) || speed(url) >= best / 12);
+        const list = usable.length ? usable : all;
+        return list.length ? [list[turn++ % list.length]] : list;
+      } }));
+    }
+    return turnViews.get(resolver);
+  }
   async function download(url, range, signal, progress) {
     const ticket = generation, controller = new AbortController();
     const abort = () => controller.abort(signal.reason || new DOMException("请求已取消", "AbortError"));
@@ -124,12 +143,14 @@
     let loaded = 0;
     const chunks = [];
     try {
-      const result = await downloader.downloadRange(range, resolverFor(url), {
+      const startup = range.start === 0 || stats.acceleratedRequests < 2;
+      const onePiece = !startup && range.length > 64 * 1024 && range.length < 128 * 1024;
+      const result = await downloader.downloadRange(range, onePiece ? inTurns(resolverFor(url)) : resolverFor(url), {
         // Small audio/index requests must not lower the shared semaphore to 1.
         // Use the original downloader's metadata race for tiny ranges instead.
         signal: controller.signal, parallel: true,
         maxConcurrency: range.length < 128 * 1024 ? 1 : api.getSettings().concurrency,
-        kind: range.length <= 64 * 1024 ? "meta" : rep?._btrKind || "video", startup: range.start === 0 || stats.acceleratedRequests < 2,
+        kind: range.length <= 64 * 1024 ? "meta" : rep?._btrKind || "video", startup,
         onOrderedChunk(bytes) {
           if (controller.signal.aborted || ticket !== generation) throw new DOMException("视频已切换", "AbortError");
           chunks.push(bytes); loaded += bytes.byteLength;

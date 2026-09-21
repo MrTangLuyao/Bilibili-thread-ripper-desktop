@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -306,8 +306,42 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
     });
   }
 
+  // How long a measured speed counts. A node in use is measured again with every segment; one
+  // that was left out for being slow goes back to the untested ones after this, and gets
+  // another try through the exploration slot.
+  const MEASUREMENT_TTL_MS = 90000;
+
   function createResolver(representation, getMode, bans = null, getCustomHosts = null) {
     const health = new Map();
+    // What is known about a node's speed, per node and file, without the query. An address
+    // with a fresh signature is the same route, so it starts with what its predecessor
+    // measured. Failures are not kept here: those belong to the address they happened on.
+    const routes = new Map();
+    const routeKeys = new Map();
+    const routeOf = (url) => {
+      let key = routeKeys.get(url);
+      if (!key) {
+        try {
+          const parsed = new URL(url);
+          key = `${parsed.host}${parsed.pathname}`;
+        } catch (_error) { key = String(url); }
+        if (routeKeys.size > 512) routeKeys.clear();
+        routeKeys.set(url, key);
+      }
+      return key;
+    };
+    const measurement = (url) => routes.get(routeOf(url)) || null;
+    // Only a transfer long enough to measure a speed renews it. The short tail of a resumed
+    // piece proves the node works, and must not keep an old speed alive for ever.
+    const measuredNow = (url, now = Date.now()) => {
+      const item = measurement(url);
+      return Boolean(item?.lastMeasuredAt) && now - item.lastMeasuredAt < MEASUREMENT_TTL_MS;
+    };
+    const bySpeed = (a, b) => {
+      const am = measurement(a) || {};
+      const bm = measurement(b) || {};
+      return Number(Boolean(bm.lastSuccessAt)) - Number(Boolean(am.lastSuccessAt)) || (bm.bps || 0) - (am.bps || 0);
+    };
     let cursor = 0;
     let mediaRangeCount = 0;
     let rangeCursor = 0;
@@ -344,25 +378,33 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
       const now = Date.now();
       const pool = urls()
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now)
-        .sort((a, b) => {
-          const ah = health.get(a) || {};
-          const bh = health.get(b) || {};
-          return Number(Boolean(bh.lastSuccessAt)) - Number(Boolean(ah.lastSuccessAt)) ||
-            (bh.bps || 0) - (ah.bps || 0);
-        });
+        .sort(bySpeed);
       if (!pool.length) return urls();
       const firstRange = mediaRangeCount === 0;
-      const width = Math.min(firstRange ? pool.length : 3, pool.length);
+      const width = Math.min(firstRange ? pool.length : 6, pool.length);
       let selected;
       const warmupRanges = getMode?.() === "mainland" ? 1 : 4;
       if (mediaRangeCount < warmupRanges) {
         selected = pool.slice(0, width);
         rangeCursor = width % pool.length;
       } else {
-        const offset = rangeCursor % pool.length;
-        const rotated = pool.slice(offset).concat(pool.slice(0, offset));
-        selected = rotated.slice(0, width);
-        rangeCursor = (rangeCursor + width) % pool.length;
+        // After the warm-up the measured nodes carry the segments in speed order; the
+        // downloader gives the fast ones the larger share. One other node rides along per
+        // segment: one that never answered, or one whose measurement has gone stale because
+        // it was too slow to be used. Routes change, so a slow node is not slow for good.
+        // While fewer nodes are measured than a segment uses, the free places go to the others
+        // as well: the downloader gives an unmeasured node only a trial piece or two, so
+        // finding the good nodes quickly costs little.
+        const measured = pool.filter((url) => measuredNow(url, now));
+        const rest = pool.filter((url) => !measuredNow(url, now));
+        const places = Math.min(rest.length, Math.max(1, width - measured.length));
+        const explore = Array.from({ length: places }, (_item, index) => rest[(rangeCursor + index) % rest.length]);
+        rangeCursor = (rangeCursor + places) % Math.max(1, pool.length);
+        selected = [...measured.slice(0, width - explore.length), ...explore];
+        for (const url of pool) {
+          if (selected.length >= Math.min(3, pool.length)) break;
+          if (!selected.includes(url)) selected.push(url);
+        }
       }
       mediaRangeCount += 1;
       return selected;
@@ -387,21 +429,32 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
       const now = Date.now();
       return urls()
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now)
-        .sort((a, b) => {
-          const ah = health.get(a) || {};
-          const bh = health.get(b) || {};
-          return Number(Boolean(bh.lastSuccessAt)) - Number(Boolean(ah.lastSuccessAt)) ||
-            (bh.bps || 0) - (ah.bps || 0);
-        });
+        .sort(bySpeed);
     }
 
     function success(url, bps) {
       bans?.success?.(url);
-      const old = health.get(url) || {};
-      health.set(url, {
-        failures: 0,
-        blockedUntil: 0,
-        lastSuccessAt: Date.now(),
+      const old = measurement(url) || {};
+      const now = Date.now();
+      const measured = bps > 0;
+      health.set(url, { failures: 0, blockedUntil: 0, lastSuccessAt: now });
+      routes.set(routeOf(url), {
+        lastSuccessAt: now,
+        // No speed comes with a transfer too short to measure one; the last one stays, and
+        // keeps its age.
+        lastMeasuredAt: measured ? now : old.lastMeasuredAt || 0,
+        bps: !measured ? old.bps || 0 : old.bps ? old.bps * 0.65 + bps * 0.35 : bps
+      });
+    }
+
+    // The speed of a transfer that was cut off before its end. It says how fast the node is
+    // and nothing more: the address has not proven itself, and earlier failures stay.
+    function sample(url, bps) {
+      if (!(bps > 0)) return;
+      const old = measurement(url) || {};
+      routes.set(routeOf(url), {
+        lastSuccessAt: old.lastSuccessAt || 0,
+        lastMeasuredAt: Date.now(),
         bps: old.bps ? old.bps * 0.65 + bps * 0.35 : bps
       });
     }
@@ -428,14 +481,17 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
         const nodeBanned = bans && !(bans.allowsNode ? bans.allowsNode(url) : bans.allows(url));
         return {
           host: new URL(url).hostname,
-          state: nodeBanned ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
-          bps: item.bps || 0
+          state: nodeBanned ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : measurement(url)?.lastSuccessAt ? "healthy" : "untested",
+          bps: measurement(url)?.bps || 0
         };
       });
     }
 
     const allows = (url) => !bans || bans.allows(url);
-    return Object.freeze({ allows, failure, ordered, rangeCandidates, rescueCandidates, startupCandidates, status, success, urls });
+    // The measured download speed of an address, for weighting piece assignments. 0 when
+    // there is none or it has gone stale.
+    const speed = (url) => (measuredNow(url) ? measurement(url)?.bps || 0 : 0);
+    return Object.freeze({ allows, failure, ordered, rangeCandidates, rescueCandidates, sample, speed, startupCandidates, status, success, urls });
   }
 
   root.__BILI_CDN_RESOLVER_FACTORY__ = Object.freeze({
@@ -460,6 +516,11 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
 
   const PIECE_ROUNDS = 3;
   const PIECE_RETRY_WINDOW_MS = 25000;
+  // Below this a resumed request saves less than its own round trip costs.
+  const RESUME_MIN_BYTES = 32 * 1024;
+  // A shorter transfer is mostly round trip. The tail of a resumed piece can be a few KiB,
+  // and counting it would mark down the very node that came to the rescue.
+  const SPEED_SAMPLE_MIN_BYTES = 48 * 1024;
 
   function abortError(reason) {
     if (reason instanceof Error || reason instanceof DOMException) return reason;
@@ -527,12 +588,54 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
     const getSettings = options.getSettings;
     const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
-    const semaphore = new Semaphore(core.normalizeSettings(getSettings()).concurrency);
+    // The page replaces its settings object when something changes, so the reference
+    // tells whether the previous normalization is still valid.
+    let rawSettings = null;
+    let normalizedSettings = null;
+    function config() {
+      const raw = getSettings();
+      if (raw !== rawSettings || !normalizedSettings) {
+        rawSettings = raw;
+        normalizedSettings = core.normalizeSettings(raw);
+      }
+      return normalizedSettings;
+    }
+    const semaphore = new Semaphore(config().concurrency);
+
+    // What one connection typically delivers here and how long a sub-chunk typically
+    // takes. Sub-chunk sizing and the hedge delay follow these measurements.
+    const meter = { connectionBps: 0, pieceMs: 0 };
+    function recordMeter(bytes, elapsedMs) {
+      if (bytes < SPEED_SAMPLE_MIN_BYTES || elapsedMs <= 0) return;
+      const bps = bytes * 1000 / elapsedMs;
+      meter.connectionBps = meter.connectionBps ? meter.connectionBps * 0.7 + bps * 0.3 : bps;
+      meter.pieceMs = meter.pieceMs ? meter.pieceMs * 0.7 + elapsedMs * 0.3 : elapsedMs;
+    }
+
+    // A sub-chunk should keep its connection busy for a good part of a second, otherwise
+    // request round trips dominate on high-latency routes. 64 KiB stays the floor while
+    // the speed is still unknown, and a range still splits into at least one piece per
+    // node: the total bandwidth only grows by spreading over hosts, and the hedges
+    // against a stalling one need more than a single request to work with.
+    function adaptiveMinChunk(settings, rangeLength, pieceLimit, hostCount = 4) {
+      if (!meter.connectionBps) return settings.minChunkBytes;
+      const target = Math.floor(meter.connectionBps * 0.6 / (64 * 1024)) * 64 * 1024;
+      const spread = Math.ceil(rangeLength / Math.max(1, Math.min(Math.max(4, hostCount), pieceLimit)));
+      return Math.max(settings.minChunkBytes, Math.min(1024 * 1024, target, spread));
+    }
+
+    // A second copy starts once a piece takes clearly longer than pieces have been
+    // taking, instead of always waiting the full fixed delay.
+    function hedgeDelayMs(settings) {
+      if (!meter.pieceMs) return settings.hedgeDelayMs;
+      return Math.max(250, Math.min(settings.hedgeDelayMs, Math.round(meter.pieceMs * 1.5)));
+    }
 
     async function readBody(response, controller, transferId, settings, received) {
       if (!response.body?.getReader) {
         const bytes = new Uint8Array(await response.arrayBuffer());
         received.bytes += bytes.byteLength;
+        received.chunks?.push(bytes);
         onTransfer({ phase: "progress", id: transferId, bytes: bytes.byteLength });
         return bytes;
       }
@@ -560,6 +663,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
           chunks.push(chunk);
           total += chunk.byteLength;
           received.bytes += chunk.byteLength;
+          // The recorder keeps what a failed attempt already received, so a retry or a
+          // hedge copy can ask only for the missing tail.
+          received.chunks?.push(chunk);
           onTransfer({ phase: "progress", id: transferId, bytes: chunk.byteLength });
         }
       } finally {
@@ -576,9 +682,23 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
       return bytes;
     }
 
-    async function attempt(piece, url, signal, kind, resolver, priority = 0) {
-      const settings = core.normalizeSettings(getSettings());
+    // begin: called once the request has its connection slot, and returns what to ask for.
+    // A copy that waited in the queue resumes from what the first copy has received by then,
+    // not from what it had when the copy was queued.
+    async function attempt(piece, url, signal, kind, resolver, priority = 0, begin = null) {
+      const settings = config();
       const release = await semaphore.acquire(signal, priority);
+      let received = { bytes: 0, chunks: [] };
+      if (begin) {
+        try {
+          const plan = begin();
+          piece = plan.part;
+          received = plan.recorder;
+        } catch (error) {
+          release();
+          throw error;
+        }
+      }
       const controller = new AbortController();
       const cancel = () => controller.abort(abortError(signal?.reason));
       if (signal?.aborted) cancel();
@@ -587,7 +707,6 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
       const totalTimer = setTimeout(() => controller.abort(new DOMException("CDN 子块总耗时超限", "TimeoutError")), settings.attemptTimeoutMs);
       const transferId = onTransfer({ phase: "start", kind, totalBytes: piece.length, url });
       const startedAt = performance.now();
-      const received = { bytes: 0 };
       try {
         const response = await nativeFetch(url, {
           method: "GET",
@@ -597,6 +716,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
           mode: "cors",
           referrer: root.location?.href,
           referrerPolicy: "strict-origin-when-cross-origin",
+          priority: priority >= 100 ? "high" : "auto",
           signal: controller.signal
         });
         clearTimeout(firstByteTimer);
@@ -607,14 +727,23 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
         }
         const bytes = await readBody(response, controller, transferId, settings, received);
         if (bytes.byteLength !== piece.length) throw new Error(`子块长度不符：${bytes.byteLength}/${piece.length}`);
-        const seconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
-        resolver.success(url, bytes.byteLength / seconds);
+        const elapsedMs = Math.max(1, performance.now() - startedAt);
+        recordMeter(bytes.byteLength, elapsedMs);
+        // The node answered either way; only a large enough transfer says how fast it is.
+        resolver.success(url, bytes.byteLength >= SPEED_SAMPLE_MIN_BYTES ? bytes.byteLength * 1000 / elapsedMs : 0);
         onTransfer({ phase: "done", id: transferId });
         return { bytes, total: contentRange.total, url };
       } catch (error) {
+        const canceled = error?.name === "AbortError";
+        // A copy that lost the race was cut off, not broken, and what it had received by then
+        // is a measurement of its node. Without it a slow node is never measured at all: its
+        // pieces are always finished by a faster copy first, and an unmeasured node only ever
+        // gets trial pieces.
+        if (canceled && received.bytes >= SPEED_SAMPLE_MIN_BYTES && typeof resolver.sample === "function") {
+          resolver.sample(url, received.bytes * 1000 / Math.max(1, performance.now() - startedAt));
+        }
         // Received bytes tell a dead node (0 KiB) apart from a transfer that stalled midway.
         resolver.failure(url, error, received.bytes);
-        const canceled = error?.name === "AbortError";
         onTransfer({ phase: canceled ? "cancel" : "error", id: transferId, error });
         throw error;
       } finally {
@@ -646,10 +775,23 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
 
     function pieceCandidates(piece, resolver, preferredUrls, round) {
       const preferred = Array.isArray(preferredUrls) ? preferredUrls : [];
-      const preferredOffset = preferred.length ? (piece.index + round) % preferred.length : 0;
+      // The first preferred address is the node this piece was assigned to by speed;
+      // only a retry round moves past it.
+      const preferredOffset = preferred.length ? round % preferred.length : 0;
       const rotatedPreferred = preferred.slice(preferredOffset).concat(preferred.slice(0, preferredOffset));
       const rescue = (typeof resolver.rescueCandidates === "function" ? resolver.rescueCandidates() : resolver.ordered(piece.index))
         .filter((url) => !rotatedPreferred.includes(url));
+      if (typeof resolver.speed === "function") {
+        // The copies after the first go to the fastest known nodes, wherever they were
+        // listed: a hedge that lands on the slowest node saves nothing.
+        const rest = [...rotatedPreferred.slice(1), ...rescue]
+          .sort((left, right) => resolver.speed(right) - resolver.speed(left));
+        const candidates = rotatedPreferred.length ? [rotatedPreferred[0], ...rest] : rest;
+        for (const url of resolver.ordered(piece.index)) {
+          if (!candidates.includes(url)) candidates.push(url);
+        }
+        return candidates;
+      }
       const candidates = [];
       const width = Math.max(rotatedPreferred.length, rescue.length);
       for (let index = 0; index < width; index += 1) {
@@ -663,12 +805,31 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
     }
 
     async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0) {
-      const settings = core.normalizeSettings(getSettings());
+      const settings = config();
       const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
       const startup = startupMode === true || startupMode === "probe";
       const probe = startupMode === "probe";
       const startedAt = performance.now();
       let lastError = null;
+
+      // The longest contiguous run of bytes fetched from the front of this piece so far.
+      // A retry or a hedge copy asks only for what is still missing and splices the two
+      // halves, instead of downloading the whole piece again. Every kept byte came out
+      // of a response whose 206 Content-Range was verified against this piece.
+      let prefix = null;
+      const keepProgress = (base, recorder) => {
+        const bytes = (base?.bytes || 0) + recorder.bytes;
+        if (bytes > (prefix?.bytes || 0) && bytes < piece.length) {
+          prefix = { bytes, chunks: base ? [...base.chunks, ...recorder.chunks] : recorder.chunks.slice() };
+        }
+      };
+      const liveProgress = (context) => {
+        if (!context) return null;
+        const chunks = context.recorder.chunks.slice();
+        let bytes = context.base?.bytes || 0;
+        for (const chunk of chunks) bytes += chunk.byteLength;
+        return { bytes, chunks: context.base ? [...context.base.chunks, ...chunks] : chunks };
+      };
 
       // Failing a piece ends acceleration for the whole video, and the list can be as short as
       // one working address. One slow reply must not decide that, so the list is walked again
@@ -698,9 +859,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
           // for the rest of the hedge delay.
           let firstFailed = () => {};
           const firstFailure = new Promise((resolve) => { firstFailed = resolve; });
+          const contexts = [];
           const attempts = pair.map((url, pairIndex) => (async () => {
             if (pairIndex) await new Promise((resolve, reject) => {
-              const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : settings.hedgeDelayMs;
+              const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : hedgeDelayMs(settings);
               const timer = setTimeout(resolve, delay);
               firstFailure.then(() => {
                 clearTimeout(timer);
@@ -713,9 +875,32 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
               if (controllers[pairIndex].signal.aborted) canceled();
               else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
             });
+            // Resume from the longest prefix known when the request really starts: an earlier
+            // failed attempt, or what the still-running first copy has received by then.
+            let base = null;
+            const recorder = { bytes: 0, chunks: [] };
+            const begin = () => {
+              base = prefix && prefix.bytes >= RESUME_MIN_BYTES ? prefix : null;
+              if (pairIndex) {
+                const live = liveProgress(contexts[0]);
+                if (live && live.bytes >= RESUME_MIN_BYTES && live.bytes > (base?.bytes || 0)) base = live;
+              }
+              if (base && base.bytes >= piece.length) base = null;
+              contexts[pairIndex] = { base, recorder };
+              return {
+                recorder,
+                part: base
+                  ? { index: piece.index, start: piece.start + base.bytes, end: piece.end, length: piece.length - base.bytes }
+                  : piece
+              };
+            };
             try {
-              return await attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0));
+              const result = await attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0), begin);
+              return base
+                ? { bytes: core.concatChunks([...base.chunks, result.bytes], piece.length), total: result.total, url: result.url }
+                : result;
             } catch (error) {
+              keepProgress(base, recorder);
               if (!pairIndex) firstFailed();
               throw error;
             }
@@ -786,8 +971,79 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
       }
     }
 
+    // Which address each piece tries first. The fastest node gets the most pieces, and a node
+    // measured at under a twelfth of the best is left out entirely: a piece it starts has to
+    // be rescued anyway. Its measurement goes stale after a while, and the resolver's
+    // exploration slot then gives it, like any untested node, another try.
+    let assignTurn = 0;
+    // Trials are counted per resolver: the video and the audio track take turns on this
+    // downloader, and one shared count could leave a track without a trial for good.
+    const trialStates = new WeakMap();
+    function assignPrimaries(urls, resolver, count) {
+      if (!urls.length || count <= 0) return [];
+      if (urls.length === 1) return new Array(count).fill(urls[0]);
+      // Each range opens one node further on, so ranges in flight together do not all
+      // send their first pieces to the same node.
+      const turn = assignTurn;
+      assignTurn = (assignTurn + 1) % 4096;
+      const measure = typeof resolver.speed === "function" ? (url) => Math.max(0, Number(resolver.speed(url)) || 0) : () => 0;
+      let known = urls.map(measure);
+      const positive = known.filter((value) => value > 0);
+      if (!positive.length) return Array.from({ length: count }, (_ignored, index) => urls[(index + turn) % urls.length]);
+      const top = Math.max(...known);
+      const eligible = urls.filter((_url, index) => !known[index] || known[index] >= top / 12);
+      if (eligible.length && eligible.length < urls.length) {
+        urls = eligible;
+        known = urls.map(measure);
+      }
+      // A node without a measurement is a trial. It gets a piece or two from the end of the
+      // range, which are needed last and may take longest, enough to measure it and cheap
+      // when it turns out to be slow. With very few pieces there is none to spare.
+      const unknown = urls.filter((_url, index) => !known[index]);
+      let trials = Math.min(unknown.length * 2, Math.floor(count / 4));
+      let trialState = trialStates.get(resolver);
+      if (!trialState) trialStates.set(resolver, trialState = { waited: 0, cursor: 0 });
+      // Small segments never have a piece to spare, and a node left out for being slow would
+      // stay unmeasured for good. Every fourth such range gives up its last piece for a trial.
+      if (!trials && unknown.length && count >= 2) {
+        trialState.waited += 1;
+        if (trialState.waited >= 4) trials = 1;
+      }
+      if (trials) trialState.waited = 0;
+      if (unknown.length) {
+        urls = urls.filter((_url, index) => known[index]);
+        known = urls.map(measure);
+        count -= trials;
+      }
+      const weights = known.map((value) => Math.max(value, top * 0.05));
+      const total = weights.reduce((sum, value) => sum + value, 0);
+      // Handed out in turns (smooth weighted round-robin), not in one block per node. The
+      // pieces with the lowest numbers get the free connections first, and the player has
+      // several segments in flight: with blocks, every segment's first pieces went to the
+      // same node and the others sat idle.
+      const primaries = [];
+      const credit = weights.map(() => 0);
+      const order = urls.map((_url, index) => (index + turn) % urls.length);
+      for (let index = 0; index < count; index += 1) {
+        let best = order[0];
+        for (const urlIndex of order) {
+          credit[urlIndex] += weights[urlIndex];
+          if (credit[urlIndex] > credit[best]) best = urlIndex;
+        }
+        credit[best] -= total;
+        primaries.push(urls[best]);
+      }
+      for (let index = 0; index < trials; index += 1) primaries.push(unknown[(index + trialState.cursor) % unknown.length]);
+      trialState.cursor = (trialState.cursor + trials) % 4096;
+      return primaries;
+    }
+
+    function preferredFor(primary, urls) {
+      return primary ? [primary, ...urls.filter((url) => url !== primary)] : urls;
+    }
+
     async function downloadStartupRange(range, resolver, options) {
-      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
+      semaphore.setLimit(config().concurrency);
       const piece = { index: 0, start: range.start, end: range.end, length: range.length };
       const startedAt = performance.now();
       let lastError = null;
@@ -863,7 +1119,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
         head.end + 1,
         range.end,
         pieceBudget,
-        settings.minChunkBytes
+        adaptiveMinChunk(settings, range.end - head.end, pieceBudget, candidateUrls.length)
       ).map((piece, index) => ({ ...piece, index: index + 1 }));
       const ordered = new Array(pieces.length);
       let nextOrderedIndex = 0;
@@ -879,13 +1135,21 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
         });
         return flushOperation;
       };
+      // The probe measured at least its own winner, so the pieces spread over the nodes by
+      // speed at once; the proven address stays each piece's first fallback. Only addresses
+      // that have delivered carry the first segment: a node whose probe never finished would
+      // otherwise get a share of it and hold up the start. The others stay available for
+      // rescue, and later ranges try them.
+      const measured = typeof resolver.speed === "function" ? (url) => resolver.speed(url) > 0 : () => false;
+      const provenUrls = candidateUrls.filter((url) => url === headResult.url || measured(url));
+      const primaries = assignPrimaries(provenUrls.length ? provenUrls : [headResult.url], resolver, pieces.length);
       const pendingPieces = pieces.map(async (piece, orderedIndex) => {
         const result = await downloadPiece(
           piece,
           resolver,
           options.signal,
           options.kind || "media",
-          [headResult.url],
+          preferredFor(primaries[orderedIndex], [headResult.url, ...candidateUrls.filter((url) => url !== headResult.url)]),
           true,
           120 - Math.min(30, piece.index)
         );
@@ -909,7 +1173,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
     }
 
     async function downloadRange(range, resolver, options = {}) {
-      const settings = core.normalizeSettings(getSettings());
+      const settings = config();
       if (options.kind === "meta") return downloadStartupRange(range, resolver, options);
       const parallel = options.parallel !== false;
       if (options.startup === true && parallel && typeof options.onOrderedChunk === "function") {
@@ -937,8 +1201,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
         range.start,
         range.end,
         pieceConcurrency,
-        parallel ? settings.minChunkBytes : Number.MAX_SAFE_INTEGER
+        parallel ? adaptiveMinChunk(settings, range.length, pieceConcurrency, preferredUrls.length) : Number.MAX_SAFE_INTEGER
       );
+      const primaries = parallel ? assignPrimaries(preferredUrls, resolver, pieces.length) : [];
       const progressive = typeof options.onOrderedChunk === "function";
       const ordered = new Array(pieces.length);
       let nextOrderedIndex = 0;
@@ -960,7 +1225,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
           resolver,
           options.signal,
           options.kind || "media",
-          preferredUrls,
+          preferredFor(primaries[piece.index], preferredUrls),
           options.startup === true,
           basePriority - Math.min(20, piece.index)
         );
@@ -983,7 +1248,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
       };
     }
 
-    return Object.freeze({ downloadRange, applySettings: () => semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency) });
+    return Object.freeze({ downloadRange, applySettings: () => semaphore.setLimit(config().concurrency) });
   }
 
   root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader });
@@ -1470,7 +1735,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.2.3-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.3.0-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
@@ -1607,6 +1872,25 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
     }
     return resolvers.get(key);
   }
+  // A request of 64 to 128 KiB is a single piece, and since 0.9.3.0 the downloader gives a
+  // single piece to the fastest node every time. The client asks for sound in a run of such
+  // requests, several at once, and they would all queue on that one node. Their first node is
+  // picked in turns here instead; a node far slower than the best is left out, and the
+  // copies that rescue a slow piece are still chosen by the downloader.
+  const turnViews = new WeakMap();
+  function inTurns(resolver) {
+    if (!turnViews.has(resolver)) {
+      let turn = 0;
+      const speed = typeof resolver.speed === "function" ? resolver.speed : () => 0;
+      turnViews.set(resolver, Object.freeze({ ...resolver, rangeCandidates() {
+        const all = resolver.rangeCandidates(), best = Math.max(0, ...all.map(speed));
+        const usable = all.filter(url => !speed(url) || speed(url) >= best / 12);
+        const list = usable.length ? usable : all;
+        return list.length ? [list[turn++ % list.length]] : list;
+      } }));
+    }
+    return turnViews.get(resolver);
+  }
   async function download(url, range, signal, progress) {
     const ticket = generation, controller = new AbortController();
     const abort = () => controller.abort(signal.reason || new DOMException("请求已取消", "AbortError"));
@@ -1619,12 +1903,14 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.2.3-d1","adapterRevision":1};
     let loaded = 0;
     const chunks = [];
     try {
-      const result = await downloader.downloadRange(range, resolverFor(url), {
+      const startup = range.start === 0 || stats.acceleratedRequests < 2;
+      const onePiece = !startup && range.length > 64 * 1024 && range.length < 128 * 1024;
+      const result = await downloader.downloadRange(range, onePiece ? inTurns(resolverFor(url)) : resolverFor(url), {
         // Small audio/index requests must not lower the shared semaphore to 1.
         // Use the original downloader's metadata race for tiny ranges instead.
         signal: controller.signal, parallel: true,
         maxConcurrency: range.length < 128 * 1024 ? 1 : api.getSettings().concurrency,
-        kind: range.length <= 64 * 1024 ? "meta" : rep?._btrKind || "video", startup: range.start === 0 || stats.acceleratedRequests < 2,
+        kind: range.length <= 64 * 1024 ? "meta" : rep?._btrKind || "video", startup,
         onOrderedChunk(bytes) {
           if (controller.signal.aborted || ticket !== generation) throw new DOMException("视频已切换", "AbortError");
           chunks.push(bytes); loaded += bytes.byteLength;

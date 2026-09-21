@@ -93,8 +93,9 @@ test("the downloader reports received bytes, bans a silent node and stops using 
   const resolver=cdn.createResolver({baseUrl:mediaUrl("upos-sz-mirrorali.bilivideo.com")},()=> "mainland",bans);
   const range={start:0,end:1024*1024-1,length:1024*1024};
   const download=async()=>{const result=await downloader.downloadRange(range,resolver,{parallel:true,kind:"video"});assert.equal(result.bytes.length,range.length);assert.ok(result.bytes.every((value,i)=>value===i%251));};
-  // Each round starts after the short back-off, as when a user keeps watching.
-  for(let round=0;round<6&&!banned.length;round++){await download();advance(61000);}
+  // Each round starts after the short back-off, as when a user keeps watching. The rounds
+  // continue past the ban: the exploration slot only reaches the partial node now and then.
+  for(let round=0;round<6;round++){await download();advance(61000);}
   assert.deepEqual(Array.from(banned),[DEAD]);
   // Parallel pieces may already be waiting on the node when the second empty reply arrives.
   assert.ok(count(DEAD)>=2,"banned only after two empty replies");
