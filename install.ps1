@@ -139,7 +139,14 @@ function Stop-BtrClient([string]$Folder) {
     $expected = Join-Path $Folder ($exeName + '.exe')
     $matches = @()
     foreach ($process in @(Get-Process -Name $exeName -ErrorAction SilentlyContinue)) {
-        if (-not $process.Path) { throw 'Cannot verify running client path. Exit Bilibili before installing.' }
+        # A process that is starting or exiting at this moment briefly has no path. One that has
+        # exited is gone; one that still has none after a short wait is not closed blindly.
+        if (-not $process.Path) {
+            $process.Refresh(); if ($process.HasExited) { continue }
+            Start-Sleep -Milliseconds 300
+            $process.Refresh(); if ($process.HasExited) { continue }
+            if (-not $process.Path) { throw 'Cannot verify running client path. Exit Bilibili before installing.' }
+        }
         if ([String]::Equals($process.Path, $expected, [StringComparison]::OrdinalIgnoreCase)) { $matches += $process }
     }
     if ($matches.Count) {

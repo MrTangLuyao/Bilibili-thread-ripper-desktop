@@ -1,11 +1,11 @@
 # 浏览器版和桌面版的区别
 
-记录时间：2026-09-21。对比的是浏览器版主分支（提交 `1bc0f89`）和桌面版 0.9.3.0-d1。写这份记录时桌面版 0.9.3.0-d1 刚在本机构建好，随这个版本一起提交；在那之前桌面版主分支还是 0.9.2.3-d1。
+记录时间：2026-09-22。对比的是浏览器版主分支（提交 `ee87091`，0.9.4.0）和桌面版 0.9.4.0-d1。写这份记录时桌面版 0.9.4.0-d1 刚在本机构建好，随这个版本一起提交；在那之前桌面版主分支还是 0.9.3.0-d1。
 
 | | 浏览器版 | 桌面版 |
 |---|---|---|
 | 仓库 | [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper) | [Bilibili-thread-ripper-desktop](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) |
-| 版本 | 0.9.3.0 | 0.9.3.0-d1 |
+| 版本 | 0.9.4.0 | 0.9.4.0-d1 |
 | 运行在哪里 | Chrome / Edge 扩展，以及油猴脚本，作用于 B 站网页 | 官方哔哩哔哩 Windows 客户端（Electron）里 |
 
 每次同步共用文件、发新版本时，请顺手更新这个文件。
@@ -20,13 +20,13 @@
 
 | 文件 | 作用 |
 |---|---|
-| `range-core.js` | Range 解析与拆分、设置的规范化、哪些地址算 B 站的视频服务器 |
+| `range-core.js` | Range 解析与拆分、设置的规范化（包括直播加速和自动线程数这两个开关）、哪些地址算 B 站的视频服务器 |
 | `cdn-resolver.js` | CDN 节点列表、节点测速和轮换、停用节点和被拒绝的地址、自定义服务器 |
-| `idm-downloader.js` | 多线程下载：子块分配、断点续传、备份副本、重试、线程名额 |
+| `idm-downloader.js` | 多线程下载：子块分配、断点续传、备份副本、重试、线程名额；自动线程数的调节器（设置里打开时才起作用） |
 | `runtime-notices.js` | Debug 和错误提示的产生与分类 |
 | `notification-view.js` | 提示气泡的显示 |
 
-两边各有一份相同的测试守着这部分：浏览器版的 `dev/shared-core-test.js`、`dev/optimization-test.js`，对应桌面版的 `test/shared.test.cjs`（只有第二行注释不同）、`test/optimization.test.cjs`。
+两边各有一份相同的测试守着这部分：浏览器版的 `dev/shared-core-test.js`、`dev/optimization-test.js`、`dev/auto-concurrency-test.js`，对应桌面版的 `test/shared.test.cjs`（只有第二行注释不同）、`test/optimization.test.cjs`、`test/auto-concurrency.test.cjs`。例外（0.9.4.0-d1）：桌面版的 `test/auto-concurrency.test.cjs` 最后一项的计时改得更稳，浏览器版这一处还没同步。
 
 检查是否一致（在桌面版仓库里运行，两个仓库放在同一个文件夹下）：
 
@@ -45,20 +45,21 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 | `settings-panel.js` | 页面里的设置面板、播放器齿轮菜单里的入口 | 桌面版的设置放在客户端的系统设置页里，另写了 `settings-view.js`、`player-settings.js` |
 | `bridge.js`、`service-worker.js` | 扩展的隔离环境与页面之间传设置，设置存在 `chrome.storage.sync`，旧设置迁移，首次使用引导 | 桌面版没有扩展环境，设置存在客户端页面的 `localStorage` |
 | `user_scripts/`、`scripts/build-userscript.ps1` | 油猴版 | 桌面版没有油猴版 |
+| `live-core.js`、`live-hook.js` | 直播加速（live.bilibili.com）：屏蔽直播 P2P、直播分片多节点竞速下载、提前缓存播放列表里的分片 | 桌面版只接管客户端的点播播放窗口，不碰客户端的直播 |
 
-因此下面这些功能只在浏览器版存在，桌面版“没有移植”不是遗漏：全接管 / 兼容模式开关，编码跟随 B 站的播放策略，“视频统计信息”里的 Player Type 和下载速度，单集循环、自动开播、连续拖进度条相关的修复，浏览器缓冲区满（QuotaExceededError）时的处理，下载地址过期前自动换新，`/list/`、稍后再看、收藏夹页面的支持，页面级诊断报告（`__biliThreadRipperDebug.report()`）。它们都依赖浏览器版自己的播放内核或页面接管代码；在客户端里，对应的事情由客户端的播放器完成。
+因此下面这些功能只在浏览器版存在，桌面版“没有移植”不是遗漏：全接管 / 兼容模式开关，编码跟随 B 站的播放策略，“视频统计信息”里的 Player Type 和下载速度，单集循环、自动开播、连续拖进度条相关的修复，拖动进度条在当前播放会话内完成、挡住 B 站播放内核的回跳（0.9.4.0），接管期间停住 B 站内核的下载调度器、屏蔽它的残留报错（0.9.4.0），杜比 / Hi-Res 音轨的接管（0.9.4.0），浏览器缓冲区满（QuotaExceededError）时的处理，下载地址过期前自动换新，`/list/`、稍后再看、收藏夹页面的支持，在所有 bilibili.com 页面打开设置面板（0.9.4.0），直播加速（0.9.4.0），页面级诊断报告（`__biliThreadRipperDebug.report()`）。它们都依赖浏览器版自己的播放内核或页面接管代码；在客户端里，对应的事情由客户端的播放器完成。
 
 ## 只有桌面版有的
 
 | 文件 | 作用 |
 |---|---|
 | `src/transport.js` | 接管客户端播放窗口里的 `fetch` 和 `XMLHttpRequest`，把带明确 Range 的媒体请求交给共用下载器 |
-| `src/client.js` | 挂到客户端的播放器对象（`biliPlayer`、`nano.createPlayer`）上：拿到播放地址、发现换了视频、显示状态提示 |
+| `src/client.js` | 挂到客户端的播放器对象（`biliPlayer`、`nano.createPlayer`）上：拿到播放地址、发现换了视频、显示状态提示；在客户端的 `<video>` 元素上接自动线程数的卡顿和缓冲信号 |
 | `src/settings.js` | 设置的保存（`localStorage`）、多窗口同步、旧设置迁移 |
-| `src/settings-view.js`、`src/player-settings.js` | 系统设置页里的线程撕裂者区域；播放器“更多播放设置”里的 CDN 和线程数 |
+| `src/settings-view.js`、`src/player-settings.js` | 系统设置页里的线程撕裂者区域（含自动线程数开关和灰色的“直播加速（敬请期待）”开关）；播放器“更多播放设置”里的 CDN 和线程数（含“自动”） |
 | `src/updates.js`、`src/update-main.cjs` | 检查更新（读 `latest.json`）、确认后安装、卸载 |
 | `src/bootstrap.cjs` | 写进客户端的入口：给客户端加一个普通的 preload，不改官方的更新缓存，不关安全检查 |
-| `launcher/`（`BTR_Desktop.exe`、`BTR_Guard.exe`） | 安装、更新、卸载的独立窗口；监视程序在客户端被官方安装包覆盖后询问是否重新接入 |
+| `launcher/`（`BTR_Desktop.exe`、`BTR_Guard.exe`） | 安装、更新、卸载的独立窗口；监视程序在客户端被官方安装包覆盖后询问是否重新接入。`-silence` 参数让更新、卸载、重新接入不显示窗口（开发和测试用，0.9.4.0-d1 加入） |
 | `install.ps1`、`force-update.ps1` | 一键安装和强制更新 |
 | `latest.json`、`packages/` | 更新清单和安装包。客户端只比较版本字符串是否相同：不同就提示更新（清单里的版本更旧也会提示），相同就不提示（同一个版本号换了安装包，用户收不到）。清单要配上对应的 ZIP 和校验值；关掉自动检查的用户不会自动看到提示，安装前都要用户确认。所以推送 `latest.json` 基本等于给所有用户发更新 |
 
@@ -83,19 +84,19 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 
 ## 设置
 
-两边的设置项都由共用的 `range-core.js` 规范化，默认值相同：大陆 CDN、8 线程、不显示红色错误提示；都支持自定义 CDN（最多 32 个，只接受 B 站自己的视频服务器）。区别：
+两边的设置项都由共用的 `range-core.js` 规范化：默认大陆 CDN、不显示红色错误提示、自动线程数（从 8 条起步，播放卡顿或缓冲跟不上时逐档加到最多 32 条，没有变快或服务器限流就退回；关掉后用手动选的线程数，默认 8）；都支持自定义 CDN（最多 32 个，只接受 B 站自己的视频服务器）。自动线程数的调节器在共用的 `idm-downloader.js` 里，卡顿和缓冲信号两边各自接：浏览器版来自它自己的播放内核，桌面版来自客户端播放器的 `<video>` 元素（`src/client.js`）。区别：
 
 | | 浏览器版 | 桌面版 |
 |---|---|---|
 | 存在哪里 | 扩展存在 `chrome.storage.sync`；油猴版存在 B 站页面的 `localStorage` | 客户端页面的 `localStorage`，键 `BTR_Desktop.settings.v1` |
-| 多出来的设置 | 全接管 / 兼容模式 | 自动检查 BTR 更新 |
-| 设置入口 | 点扩展图标或播放器齿轮菜单，打开页面里的设置面板 | 客户端系统设置的第一项，播放器“更多播放设置”里也有 CDN 和线程数 |
+| 多出来的设置 | 全接管 / 兼容模式，直播加速（实验性） | 自动检查 BTR 更新；直播只有一个灰色、不能勾选的“直播加速（敬请期待）”开关，写着“直播加速已可在网页版中使用” |
+| 设置入口 | 在任意 bilibili.com 页面点扩展图标（油猴版在油猴菜单里），或播放器齿轮菜单，打开页面里的设置面板 | 客户端系统设置的第一项，播放器“更多播放设置”里也有 CDN 和线程数 |
 
 ## 版本和发版
 
 | | 浏览器版 | 桌面版 |
 |---|---|---|
-| 版本号 | `0.9.3.0` | `0.9.3.0-d1`：浏览器版的版本号加 `-d` 和适配层的序号；换到新的浏览器版本时从 d1 重新数 |
+| 版本号 | `0.9.4.0` | `0.9.4.0-d1`：浏览器版的版本号加 `-d` 和适配层的序号；换到新的浏览器版本时从 d1 重新数 |
 | 版本写在哪里 | `manifest.json`，以及各源码文件和测试页里的版本字符串 | `desktop.json`（`version` 必须等于 `baseVersion` 加 `-d` 加 `adapterRevision`）、`package.json`、`README.md`、`docs/update-interface.md`、`src/settings.js` |
 | 更新记录 | `updates.md` | `docs/verification.md`（每个版本写清楚移植了什么、没移植什么和原因、测试结果、本机安装记录） |
 | 打包 | `scripts/build.ps1` 生成扩展 ZIP、源码 ZIP 和 CRX；`scripts/build-userscript.ps1` 生成油猴脚本 | `npm run release` 生成 `dist/`、两个 EXE、`packages/BTR_Desktop-<版本>.zip` 和 `latest.json` |
@@ -105,15 +106,15 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 
 | | 浏览器版（`dev/`） | 桌面版（`test/`） |
 |---|---|---|
-| 共用下载内核 | `shared-core-test.js` 10 项、`optimization-test.js` 13 项 | 同样的两个文件，`shared.test.cjs`、`optimization.test.cjs` |
-| 接到播放器上的那一层 | 浏览器回归 15 个测试页（`regression-smoke-test.js`），包括缓冲区配额和地址刷新；油猴和提示气泡的测试 | `transport.test.cjs` 6 项（不需要浏览器，节点的快慢、停传、不回应由测试决定）；`browser.cjs` 16 项（真实浏览器里跑打包好的 `dist/desktop.js`） |
+| 共用下载内核 | `shared-core-test.js` 10 项、`optimization-test.js` 13 项、`auto-concurrency-test.js` 10 项 | 同样的三个文件，`shared.test.cjs`、`optimization.test.cjs`、`auto-concurrency.test.cjs` |
+| 接到播放器上的那一层 | 浏览器回归 17 个测试页（`regression-smoke-test.js`），包括缓冲区配额、地址刷新、会话内跳转和直播模块；直播和点播选轨的单元测试；油猴和提示气泡的测试 | `transport.test.cjs` 6 项（不需要浏览器，节点的快慢、停传、不回应由测试决定）；`browser.cjs` 17 项（真实浏览器里跑打包好的 `dist/desktop.js`，含自动线程数的信号） |
 | 真实 B 站媒体 | `native-mse-end-test.js`（需要 `BTR_TEST_BVID`、`BTR_TEST_CID`） | 没有，由维护者在真实客户端里测 |
 | 模拟网络基准 | `download-benchmark.js`，按浏览器版播放器取分段的方式 | 没有，客户端的请求方式不同 |
-| 安装、更新、卸载、监视程序 | 没有 | `installer`、`update-main`、`force-update`、`guard`、`progress`、`package` 各测试 |
+| 安装、更新、卸载、监视程序 | 没有 | `installer`、`update-main`、`force-update`、`guard`、`progress`、`package` 各测试；维护操作默认带 `-silence` 运行，`BTR_TEST_WINDOWS=1` 时带窗口 |
 
 ## 同步共用文件时要做的事
 
-1. 把浏览器版改过的共用文件原样复制到 `shared/`，用上面的命令确认 5 个文件逐字相同；同步 `test/shared.test.cjs` 和 `test/optimization.test.cjs`。
+1. 把浏览器版改过的共用文件原样复制到 `shared/`，用上面的命令确认 5 个文件逐字相同；同步 `test/shared.test.cjs`、`test/optimization.test.cjs` 和 `test/auto-concurrency.test.cjs`。
 2. 重新读一遍 `src/transport.js` 调用下载器的地方。客户端发请求的方式和浏览器版的播放器不一样：很多请求很小、只有一个子块，节点记录按带签名的地址建立，请求经常被取消。浏览器版的测试和基准覆盖不到这些。0.9.3.0 的下载内核原样搬过来时，小请求就全挤到了一个节点上，是靠 `test/transport.test.cjs` 这类测试发现并在适配层修掉的，共用文件没有为桌面版改动。
 3. 改版本号，写 `docs/verification.md`，运行 `npm run release`、`npm test` 和 `node test/browser.cjs`。
 4. 先只装到本机，在真实客户端里测过，再提交推送。

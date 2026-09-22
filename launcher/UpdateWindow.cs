@@ -15,7 +15,11 @@ internal sealed class UpdateWindow : Form {
     private readonly ProgressBar progress = new ProgressBar();
     private readonly Button close = new Button(), logButton = new Button();
     private readonly string root, client, version, hash, logPath, mode;
-    private readonly object logLock = new object();
+    private readonly object logLock = new object(), stateLock = new object();
+    // -silence: the same worker and log, no window. Progress and the result are handled on the
+    // worker's threads instead of the window's, and RunSilently waits for the result.
+    private readonly bool silent;
+    private readonly System.Threading.ManualResetEvent done = new System.Threading.ManualResetEvent(false);
     private Process worker;
     private bool finished, completed;
     private string lastError = "";
@@ -25,14 +29,15 @@ internal sealed class UpdateWindow : Form {
     }
     private static string PS(string value) { return "'" + value.Replace("'", "''") + "'"; }
     private string Pick(string update, string uninstall, string reconnect) { return mode == "uninstall" ? uninstall : mode == "reconnect" ? reconnect : update; }
-    internal UpdateWindow(string root, string client, string[] args, string mode) {
-        this.root = root; this.client = client; this.mode = mode;
+    internal UpdateWindow(string root, string client, string[] args, string mode, bool silent = false) {
+        this.root = root; this.client = client; this.mode = mode; this.silent = silent;
         version = Argument(args,"--version"); hash = Argument(args,"--sha256");
         if (mode == "update" && (!Regex.IsMatch(version,@"^\d+\.\d+\.\d+\.\d+-d[1-9]\d*$") || !Regex.IsMatch(hash,@"^[a-fA-F0-9]{64}$"))) throw new Exception("更新参数不完整，请重新检查更新。");
         string logs = Path.Combine(Program.DataRoot(),"logs");
         Directory.CreateDirectory(logs);
         logPath = Path.Combine(logs,mode + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-") + Guid.NewGuid().ToString("N").Substring(0,8) + ".log");
         File.WriteAllText(logPath,Pick("BTR update " + version,"BTR uninstall","BTR reconnect") + Environment.NewLine,Encoding.UTF8);
+        if (silent) Log("Silent: no window");
         Text = Pick("BTR 更新","BTR 卸载","BTR 重新接入"); StartPosition = FormStartPosition.CenterScreen; ClientSize = new Size(550,245);
         FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
         Font = new Font("Microsoft YaHei UI",10F); BackColor = Color.FromArgb(27,29,34); ForeColor = Color.WhiteSmoke;
@@ -48,7 +53,17 @@ internal sealed class UpdateWindow : Form {
         Shown+=(s,e)=>BeginInvoke(new Action(StartWorker));
     }
     private void Log(string line) { lock(logLock) File.AppendAllText(logPath,DateTime.Now.ToString("O") + " " + line + Environment.NewLine,Encoding.UTF8); }
-    private void OnUI(Action action) { if(!IsDisposed && IsHandleCreated) BeginInvoke(action); }
+    private void OnUI(Action action) {
+        if (silent) { lock(stateLock) action(); return; }
+        if(!IsDisposed && IsHandleCreated) BeginInvoke(action);
+    }
+    // Runs the maintenance without a window and returns its exit code, like the window would.
+    internal int RunSilently() {
+        StartWorker();
+        done.WaitOne();
+        if (Result != 0) { try { Console.Error.WriteLine(String.IsNullOrWhiteSpace(lastError) ? "维护程序意外退出，请查看日志：" + logPath : lastError); } catch (IOException) { } }
+        return Result;
+    }
     private void StartWorker() {
         try {
             string script=Path.Combine(root,"install.ps1");
@@ -72,6 +87,8 @@ internal sealed class UpdateWindow : Form {
     private void ApplyProgress(string json) {
         var data=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(json);
         string phase=Convert.ToString(data["phase"]);
+        // Without a window only the outcome matters; the phases are in the log either way.
+        if (silent) { if (phase=="complete") completed=true; return; }
         var labels=new Dictionary<string,string> {
             {"closing","正在关闭哔哩哔哩"},{"manifest","正在读取更新信息"},{"download","正在下载安装包"},
             {"verify","正在校验安装包"},{"extract","正在解压安装包"},{"compatibility","正在检查客户端结构"},
@@ -91,7 +108,9 @@ internal sealed class UpdateWindow : Form {
         if(phase=="complete") completed=true;
     }
     private void Finish(int code) {
-        finished=true; close.Enabled=true; progress.Style=ProgressBarStyle.Continuous;
+        finished=true;
+        if (silent) { Result = code==0 && completed ? 0 : 1; done.Set(); return; }
+        close.Enabled=true; progress.Style=ProgressBarStyle.Continuous;
         if(code==0 && completed) {
             Result=0; progress.Value=100; stage.Text=Pick("BTR 更新完成","BTR 卸载完成","BTR 重新接入完成");
             detail.Text=Pick("已安装 " + version + "，哔哩哔哩已重新打开。","已验证官方文件还原成功，并重新打开哔哩哔哩。","已重新接入 BTR，哔哩哔哩已重新打开。");

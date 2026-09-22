@@ -13,6 +13,8 @@
     #btr-desktop-settings #btr-desktop-uninstall{background:#b93843;border-color:#d14c57;color:#fff}
     #btr-desktop-settings #btr-desktop-uninstall:hover:not(:disabled){background:#d04450}
     #btr-desktop-settings button:disabled{opacity:.55;cursor:default}
+    #btr-desktop-settings .btr-inline{margin:0}#btr-desktop-settings .btr-threads-row.btr-auto{opacity:.45}#btr-desktop-settings .btr-threads-row.btr-auto input{cursor:default}
+    #btr-desktop-settings .btr-live-row label{color:var(--text3,#9499a0);cursor:not-allowed}#btr-desktop-settings .btr-live-row input{cursor:not-allowed}
     #btr-desktop-settings input{accent-color:#d45b88}#btr-desktop-settings input[type=checkbox]{width:16px;height:16px;vertical-align:middle;margin:0 8px 0 0}
     #btr-desktop-settings input[type=range]{width:min(290px,55vw)}#btr-desktop-settings output{min-width:35px;color:#ef77a3;font-weight:600}
     #btr-desktop-settings .btr-debug-options{display:grid;grid-template-columns:repeat(2,minmax(145px,1fr));gap:12px;max-width:440px;padding:12px 0 6px}
@@ -46,7 +48,9 @@
           <div class="btr-note btr-host-error" role="alert"></div>
           <div class="btr-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</div>
         </div>
-        <div class="btr-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
+        <div class="btr-row"><label><input type="checkbox" data-setting="autoConcurrency">自动线程数</label><span class="btr-note btr-inline">BTR将智能选择需要的线程数。</span></div>
+        <div class="btr-row btr-threads-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
+        <div class="btr-row btr-live-row"><label><input type="checkbox" id="btr-desktop-live" disabled>直播加速（敬请期待）</label><span class="btr-note btr-inline">直播加速已可在网页版中使用</span></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="errorNotices">显示错误</label><label><input type="checkbox" data-setting="debugNotices">Debug 模式</label></div>
         <div class="btr-debug-wrap" hidden><div class="btr-row"><button type="button" data-select="all">全选</button><button type="button" data-select="none">全不选</button></div><div class="btr-debug-options"></div></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="autoCheckUpdates">自动检查 BTR 更新</label></div>
@@ -119,6 +123,9 @@
         }));
         panel.querySelector("input[type=range]").value = String(Math.max(0, threadOptions.indexOf(settings.concurrency)));
         panel.querySelector("output").textContent = String(settings.concurrency);
+        // With 自动线程数 on the slider is the manual choice kept for later, not in use.
+        panel.querySelector("input[type=range]").disabled = settings.autoConcurrency;
+        panel.querySelector(".btr-threads-row").classList.toggle("btr-auto", settings.autoConcurrency);
         panel.querySelector(".btr-debug-wrap").hidden = !settings.debugNotices;
       });
       unsubscribeUpdate = api.onUpdate(update => {

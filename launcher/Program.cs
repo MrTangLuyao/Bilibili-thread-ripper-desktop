@@ -34,6 +34,13 @@ internal static class Program {
         return text.Append('\\', slashes * 2).Append('"').ToString();
     }
     internal static string Arguments(IEnumerable<string> values) { return String.Join(" ", values.Select(Quote)); }
+    // -silence (or --silence): update, uninstall and reconnect run exactly as usual, with the
+    // same log, but show no window and no message box. For development and tests, so that a
+    // run of the test suite does not open a window for every maintenance step. The client's
+    // own update button never passes it.
+    internal static bool Silent(string[] args) {
+        return args.Any(a => String.Equals(a, "-silence", StringComparison.OrdinalIgnoreCase) || String.Equals(a, "--silence", StringComparison.OrdinalIgnoreCase));
+    }
     internal static bool Admin() { using (var id = WindowsIdentity.GetCurrent()) return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator); }
     internal static string DataRoot() {
         string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
@@ -71,8 +78,19 @@ internal static class Program {
         string exe = Path.Combine(folder, ClientExe);
         var matches = new List<Process>();
         foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ClientExe))) {
-            try { if (String.Equals(process.MainModule.FileName, exe, StringComparison.OrdinalIgnoreCase)) matches.Add(process); }
-            catch (Exception e) { if (process.HasExited) continue; throw new Exception("无法确认客户端进程路径，请先退出客户端。", e); }
+            // A process that is starting or exiting at this moment briefly has no readable path:
+            // one that has exited is gone, one that still has none after a short wait is not
+            // taken for anything (the same rule as install.ps1).
+            string path = null;
+            for (int attempt = 0; attempt < 2 && path == null; attempt++) {
+                try { path = process.MainModule.FileName; }
+                catch (Exception e) {
+                    process.Refresh(); if (process.HasExited) break;
+                    if (attempt == 1) throw new Exception("无法确认客户端进程路径，请先退出客户端。", e);
+                    System.Threading.Thread.Sleep(300); process.Refresh(); if (process.HasExited) break;
+                }
+            }
+            if (path != null && String.Equals(path, exe, StringComparison.OrdinalIgnoreCase)) matches.Add(process);
         }
         return matches.ToArray();
     }
@@ -141,24 +159,28 @@ internal static class Program {
     private static int Main(string[] args) {
         // The guard has no console. Its encoding cannot and need not be changed.
         try { Console.OutputEncoding = Encoding.UTF8; } catch (IOException) { }
-        bool interactive = !args.Contains("--noninteractive");
+        bool interactive = !args.Contains("--noninteractive") && !Silent(args);
         try {
 #if GUARD
             interactive = false;
             return Guard.Run(args);
 #else
-            if (args.Contains("--help")) { Console.WriteLine("BTR_Desktop.exe [launch|install|repair|remove|uninstall|reconnect|status|check-update] [--client 安装目录]\n不带参数会检查接入状态，然后启动官方客户端。install 和 remove 需要先完全退出客户端。uninstall 显示独立卸载进度并重新打开官方客户端。"); return 0; }
+            if (args.Contains("--help")) { Console.WriteLine("BTR_Desktop.exe [launch|install|repair|remove|uninstall|reconnect|status|check-update] [--client 安装目录] [-silence]\n不带参数会检查接入状态，然后启动官方客户端。install 和 remove 需要先完全退出客户端。uninstall 显示独立卸载进度并重新打开官方客户端。\n-silence：更新、卸载、重新接入照常进行、照常写日志，但不显示窗口和提示框（开发和测试用）。"); return 0; }
             string folder = Client(args);
             if (args.Length > 0 && args[0] == "--apply") {
                 if (!Admin() || args.Length < 2 || !new[] {"install", "repair", "remove"}.Contains(args[1])) throw new Exception("无效的安装操作。");
                 RequireClosed(folder); Console.WriteLine(Json.Serialize(RunNode(folder, args[1]))); return 0;
             }
-            string action = args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "launch";
+            string action = args.Length > 0 && !args[0].StartsWith("-") ? args[0] : "launch";
             if (WindowActions.Contains(action)) {
                 if (Admin()) throw new Exception("请用普通权限运行维护程序，只有修改客户端文件时才请求管理员授权。");
                 if (!args.Contains("--window")) return Relay(args);
-                Application.EnableVisualStyles();
-                using (var window = new UpdateWindow(Root, folder, args, action)) { Application.Run(window); return window.Result; }
+                bool silent = Silent(args);
+                if (!silent) Application.EnableVisualStyles();
+                using (var window = new UpdateWindow(Root, folder, args, action, silent)) {
+                    if (silent) return window.RunSilently();
+                    Application.Run(window); return window.Result;
+                }
             }
             if (action == "status" || action == "check-update" || action == "check-remove") { Console.WriteLine(Json.Serialize(RunNode(folder, action))); return 0; }
             if (action == "forget") { Forget(folder); return 0; }

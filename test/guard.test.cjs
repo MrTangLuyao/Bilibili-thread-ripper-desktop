@@ -2,7 +2,7 @@
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),os=require("node:os"),path=require("node:path"),{spawn}=require("node:child_process");
 const {Asar}=require("../tools/asar.cjs");
 const {patch}=require("../tools/client-package.cjs");
-const {root,ps,execute,sleep,clientAsar,setup,cleanup,actualHash,readLog,waitForWorker,waitForFile,assertPhases}=require("./fixture-client.cjs");
+const {WINDOWS,maintenance,root,ps,execute,sleep,clientAsar,setup,cleanup,actualHash,readLog,waitForWorker,waitForFile,assertPhases}=require("./fixture-client.cjs");
 const quote=value=>"'"+String(value).replace(/'/g,"''")+"'";
 // Same loading style as the installer tests: no execution policy change is needed.
 const run=([script,...args],env,timeout)=>execute(ps,["-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(`& ([ScriptBlock]::Create([IO.File]::ReadAllText(${quote(script)}))) ${args.map(x=>x.startsWith("-")?x:quote(x)).join(" ")}`,"utf16le").toString("base64")],env,timeout);
@@ -12,7 +12,7 @@ test("guard decisions, startup entry ownership and argument quoting",{skip:proce
   try{
     const client=path.join(dir,"client");fs.mkdirSync(path.join(client,"resources"),{recursive:true});
     fs.writeFileSync(path.join(client,"resources/app.asar"),clientAsar("1.19.0"));
-    const compile=await execute("C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",["/nologo","/target:exe",`/out:${path.join(client,"哔哩哔哩.exe")}`,path.join(__dirname,"Fixture.cs")],process.env);assert.equal(compile.code,0,compile.stdout+compile.stderr);
+    const compile=await execute("C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",["/nologo","/target:winexe",`/out:${path.join(client,"哔哩哔哩.exe")}`,path.join(__dirname,"Fixture.cs")],process.env);assert.equal(compile.code,0,compile.stdout+compile.stderr);
     fs.writeFileSync(path.join(dir,"patched.asar"),patch(new Asar(clientAsar("1.19.0")),Buffer.from("x"),{}));
     fs.writeFileSync(path.join(dir,"strange.asar"),clientAsar("2.0.0",{main:"app.jsc"}));
     const result=await run([path.join(__dirname,"guard-harness.ps1"),"-Guard",path.join(root,"BTR_Guard.exe"),"-Fixture",dir],{...process.env,BTR_TEST_NODE:process.execPath},60000);
@@ -20,10 +20,13 @@ test("guard decisions, startup entry ownership and argument quoting",{skip:proce
   }finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:300});}
 });
 
-test("guard notices an official reinstall, reconnects on request, remembers a refusal and retires with its installation",{skip:process.platform!=="win32",timeout:240000},async()=>{
+// This one is about the guard's own prompt window: it shows the prompt and clicks its buttons.
+// It runs only when windows are asked for (BTR_TEST_WINDOWS=1); the guard's decisions are
+// covered without windows by the test above.
+test("guard notices an official reinstall, reconnects on request, remembers a refusal and retires with its installation",{skip:process.platform!=="win32"?true:!WINDOWS&&"shows the guard's prompt window; set BTR_TEST_WINDOWS=1 to run it",timeout:240000},async()=>{
   const before=actualHash(),f=await setup();
   try{
-    const installed=await execute(path.join(f.bridge,"BTR_Desktop.exe"),["update","--client",f.client,"--version",f.manifest.version,"--sha256",f.manifest.sha256],f.env,60000,true);
+    const installed=await execute(path.join(f.bridge,"BTR_Desktop.exe"),maintenance(["update","--client",f.client,"--version",f.manifest.version,"--sha256",f.manifest.sha256]),f.env,60000,true);
     assert.equal(installed.code,0,installed.stdout+installed.stderr);
     const installPath=JSON.parse(fs.readFileSync(f.pointer)).installPath,patched=fs.readFileSync(f.asar);
     fs.unlinkSync(f.marker);

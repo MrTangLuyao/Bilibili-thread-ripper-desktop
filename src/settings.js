@@ -10,7 +10,9 @@
     const s = root.__BILI_RANGE_CORE__.normalizeSettings(value || {});
     // mode "custom" uses only the servers in customHosts; the shared core keeps Bilibili's
     // video servers and drops anything else.
-    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
+    // 自动线程数 is on unless switched off, as in the browser version; concurrency is then only
+    // the manual choice, used again when it is switched off.
+    return { enabled: s.enabled, autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
   };
   let current;
   try {
@@ -22,7 +24,7 @@
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.3.0-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.4.0-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),

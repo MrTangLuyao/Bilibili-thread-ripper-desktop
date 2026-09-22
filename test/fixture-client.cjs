@@ -21,7 +21,7 @@ async function setup(){
   const client=path.join(dir,"client"),bridge=path.join(dir,"updater");fs.mkdirSync(path.join(client,"resources"),{recursive:true});fs.mkdirSync(bridge);
   const original=clientAsar();fs.writeFileSync(path.join(client,"resources/app.asar"),original);
   const exe=path.join(client,"哔哩哔哩.exe");
-  const compile=await execute("C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",["/nologo","/target:exe",`/out:${exe}`,path.join(__dirname,"Fixture.cs")],process.env);assert.equal(compile.code,0,compile.stdout+compile.stderr);
+  const compile=await execute("C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",["/nologo","/target:winexe",`/out:${exe}`,path.join(__dirname,"Fixture.cs")],process.env);assert.equal(compile.code,0,compile.stdout+compile.stderr);
   for(const file of ["BTR_Desktop.exe","BTR_Guard.exe"])fs.copyFileSync(path.join(root,file),path.join(bridge,file));
   fs.copyFileSync(path.join(__dirname,"local-release-installer.ps1"),path.join(bridge,"install.ps1"));
   const manifest=JSON.parse(fs.readFileSync(path.join(root,"latest.json"))),localData=path.join(dir,"local-data"),marker=path.join(dir,"restarted.txt");
@@ -58,4 +58,10 @@ async function waitForWorker(f,prefix,timeout=60000){
 // The worker only starts the official program; the fixture writes its marker a moment later.
 async function waitForFile(file,timeout=15000){const deadline=Date.now()+timeout;while(Date.now()<deadline){if(fs.existsSync(file))return true;await sleep(100);}return false;}
 function assertPhases(log,phases){let previous=-1;for(const phase of phases){const at=log.indexOf(`"phase":"${phase}"`);assert.ok(at>previous,"Missing or out-of-order phase "+phase+"\n"+log);previous=at;}}
-module.exports={root,ps,execute,sleep,clientAsar,setup,powershell,psText,cleanup,actualHash,readLog,waitForWorker,waitForFile,assertPhases};
+// Maintenance runs (update, uninstall, reconnect) pass -silence, so a test run opens no
+// windows. BTR_TEST_WINDOWS=1 runs them with their real windows, and also runs the test that
+// clicks the guard's prompt.
+const WINDOWS=process.env.BTR_TEST_WINDOWS==="1";
+const maintenance=args=>WINDOWS?args:[...args,"-silence"];
+const assertWindowMode=log=>WINDOWS?assert.doesNotMatch(log,/Silent: no window/):assert.match(log,/Silent: no window/);
+module.exports={WINDOWS,maintenance,assertWindowMode,root,ps,execute,sleep,clientAsar,setup,powershell,psText,cleanup,actualHash,readLog,waitForWorker,waitForFile,assertPhases};

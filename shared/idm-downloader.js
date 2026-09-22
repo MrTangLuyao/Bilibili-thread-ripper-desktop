@@ -31,6 +31,10 @@
     }
 
     drain() {
+      try { this.drainQueue(); } finally { this.onChange?.(this.active, this.limit, this.queue.length); }
+    }
+
+    drainQueue() {
       while (this.active < this.limit && this.queue.length) {
         const entry = this.queue.shift();
         entry.signal?.removeEventListener("abort", entry.cancel);
@@ -70,9 +74,217 @@
         this.queue.push(entry);
         this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.drain();
+        this.onChange?.(this.active, this.limit, this.queue.length);
       });
     }
   }
+
+  // 自动线程数. One controller for the whole page: the thread count starts at 8 and climbs a
+  // ladder towards 32 on every sign that the download is not keeping up with playback
+  // (the player stalls; a low buffer stops growing while bytes keep arriving; a
+  // connection waits too long for its first byte while every slot is busy). Every step up
+  // is a trial: ten seconds later the bytes per second must have grown, otherwise the
+  // step is taken back to where it started and that level rests for a while — more
+  // connections that bring nothing only add risk. A server refusing the load (412, 429)
+  // steps it back too, and nothing climbs past a refused level until it has rested. The
+  // level is kept across videos on the same page; a new page starts at 8 again.
+  const AUTO_LADDER = Object.freeze([8, 12, 16, 24, 32]);
+  const AUTO_STEP_COOLDOWN_MS = 2500;
+  const AUTO_TRIAL_MS = 10000;
+  const AUTO_WINDOW_MS = 5000;
+  const AUTO_BUCKET_MS = 250;
+  const AUTO_REST_MS = 90000;
+  const AUTO_PUSHBACK_REST_MS = 180000;
+  const AUTO_LOW_BUFFER_SECONDS = 6;
+  const AUTO_PRESSURE_MS = 1000;
+  const AUTO_ACTIVITY_MS = 1500;
+
+  function createAutoConcurrency({ now = () => performance.now() } = {}) {
+    const listeners = new Set();
+    const state = {
+      level: 0, changedAt: 0, reason: "起步", steps: 0, trial: null,
+      // level index -> { until, hard }: hard rests (refusals) also cap every level above.
+      resting: new Map(),
+      buckets: [], lastActivityAt: -Infinity,
+      // Time the connections spent saturated: intervals of { from, to } within the window.
+      saturated: false, saturatedSince: 0, saturatedSpans: [],
+      aheadSamples: [], pressureSince: 0
+    };
+    const threads = () => AUTO_LADDER[state.level];
+
+    function pruneBuckets(at) {
+      while (state.buckets.length && at - state.buckets[0].at > AUTO_WINDOW_MS) state.buckets.shift();
+    }
+
+    // Bytes per second over the window, from completed pieces only: a hedge copy that lost
+    // its race is not delivery.
+    function throughput(at = now()) {
+      pruneBuckets(at);
+      if (!state.buckets.length) return 0;
+      const bytes = state.buckets.reduce((sum, item) => sum + item.bytes, 0);
+      // Over the time between the first and the last delivery in the window: an idle tail
+      // (nothing wanted) is not slowness.
+      return bytes * 1000 / Math.max(1000, state.buckets.at(-1).at - state.buckets[0].at + AUTO_BUCKET_MS);
+    }
+
+    // The share of the window during which every slot was busy and pieces were queued.
+    function saturation(at = now()) {
+      const from = at - AUTO_WINDOW_MS;
+      state.saturatedSpans = state.saturatedSpans.filter((span) => span.to > from);
+      let busy = state.saturatedSpans.reduce((sum, span) => sum + Math.max(0, span.to - Math.max(span.from, from)), 0);
+      if (state.saturated) busy += Math.max(0, at - Math.max(state.saturatedSince, from));
+      return Math.min(1, busy / AUTO_WINDOW_MS);
+    }
+
+    function resting(level, at) {
+      const rest = state.resting.get(level);
+      if (!rest) return null;
+      if (rest.until <= at) { state.resting.delete(level); return null; }
+      return rest;
+    }
+
+    function setLevel(level, reason, trial) {
+      const previous = threads();
+      const at = now();
+      state.level = level;
+      state.changedAt = at;
+      state.reason = reason;
+      state.steps += 1;
+      state.trial = trial || null;
+      state.pressureSince = 0;
+      for (const listener of listeners) {
+        try { listener({ threads: threads(), previous, reason }); } catch (_error) {}
+      }
+    }
+
+    // Up one level. A level resting after a refusal caps the climb; one resting after a
+    // fruitless trial is skipped only by a strong signal (a stall), not by pressure.
+    function stepUp(reason, strong) {
+      const at = now();
+      if (at - state.changedAt < AUTO_STEP_COOLDOWN_MS) return false;
+      if (resting(state.level, at)?.hard) return false;
+      let next = state.level + 1;
+      while (next < AUTO_LADDER.length) {
+        const rest = resting(next, at);
+        if (!rest) break;
+        if (rest.hard || !strong) return false;
+        next += 1;
+      }
+      if (next >= AUTO_LADDER.length) return false;
+      setLevel(next, reason, { from: state.level, level: next, at, baseline: throughput(at), stalled: false });
+      return true;
+    }
+
+    function stepDown(target, restLevel, reason, restMs, hard) {
+      state.resting.set(restLevel, { until: now() + restMs, hard });
+      if (target >= state.level) return false;
+      setLevel(target, reason, null);
+      return true;
+    }
+
+    // A step up has had its time: did the extra connections deliver? Only judged when the
+    // connections were busy meanwhile; an idle download (buffer full) proves nothing, and
+    // so does a stall in between. Without any gain the step goes back to where it started.
+    function judgeTrial(at) {
+      const trial = state.trial;
+      if (!trial || at - trial.at < AUTO_TRIAL_MS) return;
+      state.trial = null;
+      if (trial.stalled || saturation(at) < 0.6 || trial.baseline <= 0) return;
+      if (throughput(at) < trial.baseline) {
+        stepDown(trial.from, trial.level, `${AUTO_LADDER[trial.level]} 线程没有比 ${AUTO_LADDER[trial.from]} 线程更快`, AUTO_REST_MS, false);
+      }
+    }
+
+    return Object.freeze({
+      ladder: AUTO_LADDER,
+      threads,
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      // A piece arrived whole.
+      delivered(bytes, at = now()) {
+        const last = state.buckets.at(-1);
+        if (last && at - last.at < AUTO_BUCKET_MS) last.bytes += bytes;
+        else state.buckets.push({ at, bytes });
+        pruneBuckets(at);
+        judgeTrial(at);
+      },
+      // Bytes are flowing on some connection right now.
+      activity(at = now()) {
+        state.lastActivityAt = at;
+      },
+      // The connections' state whenever it changes.
+      demand(active, limit, queued, at = now()) {
+        const saturated = active >= limit && queued > 0;
+        if (saturated === state.saturated) return;
+        if (state.saturated) state.saturatedSpans.push({ from: state.saturatedSince, to: at });
+        state.saturated = saturated;
+        state.saturatedSince = at;
+        saturation(at);
+      },
+      // The player stalled: more threads at once.
+      stall(reason = "播放卡了一下") {
+        if (state.trial) state.trial.stalled = true;
+        return stepUp(reason, true);
+      },
+      // The buffer ahead of the playhead, a few times a second while playing. A low buffer
+      // that has not grown over the last second although bytes keep arriving, for a whole
+      // second, means the connections are too few.
+      buffer(ahead, playing, at = now()) {
+        state.aheadSamples.push({ at, ahead });
+        while (state.aheadSamples.length && at - state.aheadSamples[0].at > AUTO_PRESSURE_MS + AUTO_BUCKET_MS) state.aheadSamples.shift();
+        const earlier = state.aheadSamples.find((item) => at - item.at >= AUTO_PRESSURE_MS);
+        const downloading = at - state.lastActivityAt < AUTO_ACTIVITY_MS;
+        const pressed = playing && downloading && ahead < AUTO_LOW_BUFFER_SECONDS && earlier && ahead <= earlier.ahead + 0.05;
+        if (!pressed) { state.pressureSince = 0; return false; }
+        if (!state.pressureSince) { state.pressureSince = at; return false; }
+        if (at - state.pressureSince < AUTO_PRESSURE_MS) return false;
+        state.pressureSince = 0;
+        return stepUp("缓冲跟不上播放", false);
+      },
+      // A connection waited too long for its first byte while every slot was busy.
+      slow() {
+        return saturation() >= 0.6 ? stepUp("连接排队等太久", false) : false;
+      },
+      // The server refused the load: back one level, and nothing climbs past this one for
+      // a while.
+      pushback(status) {
+        return stepDown(Math.max(0, state.level - 1), state.level, `服务器返回 ${status}`, AUTO_PUSHBACK_REST_MS, true);
+      },
+      // A new playback session: what the buffer did before means nothing now.
+      newSession() {
+        state.aheadSamples.length = 0;
+        state.pressureSince = 0;
+        state.trial = null;
+        state.buckets.length = 0;
+        state.saturatedSpans.length = 0;
+        if (state.saturated) state.saturatedSince = now();
+      },
+      status() {
+        const at = now();
+        return {
+          threads: threads(), level: state.level, reason: state.reason, steps: state.steps, changedAt: state.changedAt,
+          throughputBps: Math.round(throughput(at)), saturation: Math.round(saturation(at) * 100) / 100,
+          buckets: state.buckets.length, activityAgeMs: Math.round(at - state.lastActivityAt),
+          resting: [...state.resting.entries()].filter(([, rest]) => rest.until > at).map(([level, rest]) => ({ threads: AUTO_LADDER[level], hard: rest.hard, forMs: Math.round(rest.until - at) })),
+          trial: state.trial ? { from: AUTO_LADDER[state.trial.from], level: AUTO_LADDER[state.trial.level], ageMs: Math.round(at - state.trial.at), baselineBps: Math.round(state.trial.baseline), stalled: state.trial.stalled } : null
+        };
+      },
+      reset() {
+        state.level = 0; state.changedAt = 0; state.reason = "起步"; state.steps = 0; state.trial = null;
+        state.resting.clear(); state.buckets.length = 0; state.lastActivityAt = -Infinity;
+        state.saturated = false; state.saturatedSince = 0; state.saturatedSpans.length = 0;
+        state.aheadSamples.length = 0; state.pressureSince = 0;
+      }
+    });
+  }
+  const autoConcurrency = createAutoConcurrency();
+  // Every downloader on the page follows the controller's count at once.
+  const autoFollowers = new Set();
+  autoConcurrency.subscribe(() => {
+    for (const ref of autoFollowers) {
+      const follow = ref.deref();
+      if (follow) follow(); else autoFollowers.delete(ref);
+    }
+  });
 
   function createDownloader(options) {
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
@@ -82,15 +294,24 @@
     // tells whether the previous normalization is still valid.
     let rawSettings = null;
     let normalizedSettings = null;
+    let autoView = null;
     function config() {
       const raw = getSettings();
       if (raw !== rawSettings || !normalizedSettings) {
         rawSettings = raw;
         normalizedSettings = core.normalizeSettings(raw);
+        autoView = null;
       }
-      return normalizedSettings;
+      if (!normalizedSettings.autoConcurrency) return normalizedSettings;
+      // In the automatic mode the thread count is the controller's, everything else the viewer's.
+      const threads = autoConcurrency.threads();
+      if (!autoView || autoView.concurrency !== threads) autoView = { ...normalizedSettings, concurrency: threads };
+      return autoView;
     }
     const semaphore = new Semaphore(config().concurrency);
+    const applySettings = () => semaphore.setLimit(config().concurrency);
+    autoFollowers.add(new WeakRef(applySettings));
+    semaphore.onChange = (active, limit, queued) => { if (config().autoConcurrency) autoConcurrency.demand(active, limit, queued); };
 
     // What one connection typically delivers here and how long a sub-chunk typically
     // takes. Sub-chunk sizing and the hedge delay follow these measurements.
@@ -126,6 +347,7 @@
         const bytes = new Uint8Array(await response.arrayBuffer());
         received.bytes += bytes.byteLength;
         received.chunks?.push(bytes);
+        if (settings.autoConcurrency) autoConcurrency.activity();
         onTransfer({ phase: "progress", id: transferId, bytes: bytes.byteLength });
         return bytes;
       }
@@ -156,6 +378,7 @@
           // The recorder keeps what a failed attempt already received, so a retry or a
           // hedge copy can ask only for the missing tail.
           received.chunks?.push(chunk);
+          if (settings.autoConcurrency) autoConcurrency.activity();
           onTransfer({ phase: "progress", id: transferId, bytes: chunk.byteLength });
         }
       } finally {
@@ -234,6 +457,10 @@
         }
         // Received bytes tell a dead node (0 KiB) apart from a transfer that stalled midway.
         resolver.failure(url, error, received.bytes);
+        if (settings.autoConcurrency) {
+          if (error?.status === 412 || error?.status === 429) autoConcurrency.pushback(error.status);
+          else if (!canceled && error?.name === "TimeoutError" && received.bytes === 0) autoConcurrency.slow();
+        }
         onTransfer({ phase: canceled ? "cancel" : "error", id: transferId, error });
         throw error;
       } finally {
@@ -400,6 +627,7 @@
             controllers.forEach((controller) => {
               if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
             });
+            if (settings.autoConcurrency) autoConcurrency.delivered(piece.length);
             return winner;
           } catch (aggregate) {
             lastError = aggregate?.errors?.at?.(-1) || aggregate;
@@ -738,8 +966,8 @@
       };
     }
 
-    return Object.freeze({ downloadRange, applySettings: () => semaphore.setLimit(config().concurrency) });
+    return Object.freeze({ downloadRange, applySettings, getConcurrency: () => semaphore.limit });
   }
 
-  root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader });
+  root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader, createAutoConcurrency, autoConcurrency });
 })(globalThis);

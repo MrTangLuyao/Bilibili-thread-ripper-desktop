@@ -1,18 +1,18 @@
 {
-  "version": "0.9.3.0-d1",
+  "version": "0.9.4.0-d1",
   "adapterRevision": 1,
-  "sha256": "323202e7d8b0b3d15cb705ff7f050b2dae2f8c1e7d22568336ec1015de17796c",
+  "sha256": "50c8cfd549c1a355d231349b575faf468342f4d0dbf8d73cba6fc71fbfb7cb89",
   "files": {
-    "shared/range-core.js": "f3f27906c4f9a23e1143097ab332b94b8879fc992d2ddb2206ab51c575eb2855",
+    "shared/range-core.js": "323b41d6e027543da97b4b0f5d206f3d03b23ca33b996338a1deef6d0e2a6098",
     "shared/cdn-resolver.js": "4f86ea84722f4e291246fb1c807f37ecb3060eb90bdccb42ec9665f3c6100f18",
-    "shared/idm-downloader.js": "4195cb8980eb7e75011d279aba7d8df3bc6e3f026428c8a593cefb15bbf5e491",
+    "shared/idm-downloader.js": "7cb418104d2855817560f9a08240a6da0e6c95fb7acb870a200749ca59020dfa",
     "shared/runtime-notices.js": "d6a1a5105db4fe824ae4f4513b75dcf599c9909b55eb3277d8e42fec936a54a0",
     "shared/notification-view.js": "82817d9af5b8909938815b7e632f3076b1f59c03503a16f2b6073426dd0c1502",
-    "src/settings.js": "9ea15a4c6e0608f4c516ad8fc6a8d06241a34a94a63bfc803d6eb8e27862227e",
-    "src/transport.js": "550330e2f91d8ccbedadfe36c22e37fb83374454ea0ac4783bcaa1edfa810d43",
-    "src/client.js": "d385d62a85dcb2c62c368095c3ce22ed11a2ac3c1e36b4e1cf9fea68e8c93a41",
+    "src/settings.js": "ca898b14316d6d1f2747895402c996ffa81c6e545c299545eb837a3b48098c31",
+    "src/transport.js": "f23123e7f5846aed0ccc0796821d067d56cf62bd0994f4c9e12f495ab19c7d08",
+    "src/client.js": "0d50e48b7df8a9a9414e14026a11c0cca0e43caf74d46450c3ab04f8d2c4ea16",
     "src/updates.js": "4be36c1110458d8edd04d2429b614f6f0190c23ed28c70586ac0c47edad541b2",
-    "src/settings-view.js": "17d47f941707b9be2be3c8b069fcedd6bbcb06ad7e542a65cdf8ab357ec5c8b8",
-    "src/player-settings.js": "14d6a4819446bb6d632500b9530224a5af482cf3f63d31a2c30a192e9be3d111"
+    "src/settings-view.js": "967dbe1a9d11dabd41cdd4c797057dcbf686ecb7918b2f55bae1ad93395c9378",
+    "src/player-settings.js": "21d151da22f7b2e4aa6dc33bd897f2490b237e4fbe48ba5cfa4fc1cf0891c348"
   }
 }

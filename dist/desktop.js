@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.0-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -92,6 +92,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
     const requested = Math.trunc(Number(source.concurrency));
     return {
       enabled: source.enabled !== false,
+      // The live module on live.bilibili.com; the master switch above still rules.
+      liveEnabled: source.liveEnabled !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
@@ -104,6 +106,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
+      // 自动线程数: the downloader picks the thread count itself, between 8 and 32, and
+      // `concurrency` above is only what the viewer set by hand. Off unless asked for.
+      autoConcurrency: source.autoConcurrency === true,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
       stallTimeoutMs: 4000,
@@ -541,6 +546,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
     }
 
     drain() {
+      try { this.drainQueue(); } finally { this.onChange?.(this.active, this.limit, this.queue.length); }
+    }
+
+    drainQueue() {
       while (this.active < this.limit && this.queue.length) {
         const entry = this.queue.shift();
         entry.signal?.removeEventListener("abort", entry.cancel);
@@ -580,9 +589,217 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
         this.queue.push(entry);
         this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.drain();
+        this.onChange?.(this.active, this.limit, this.queue.length);
       });
     }
   }
+
+  // 自动线程数. One controller for the whole page: the thread count starts at 8 and climbs a
+  // ladder towards 32 on every sign that the download is not keeping up with playback
+  // (the player stalls; a low buffer stops growing while bytes keep arriving; a
+  // connection waits too long for its first byte while every slot is busy). Every step up
+  // is a trial: ten seconds later the bytes per second must have grown, otherwise the
+  // step is taken back to where it started and that level rests for a while — more
+  // connections that bring nothing only add risk. A server refusing the load (412, 429)
+  // steps it back too, and nothing climbs past a refused level until it has rested. The
+  // level is kept across videos on the same page; a new page starts at 8 again.
+  const AUTO_LADDER = Object.freeze([8, 12, 16, 24, 32]);
+  const AUTO_STEP_COOLDOWN_MS = 2500;
+  const AUTO_TRIAL_MS = 10000;
+  const AUTO_WINDOW_MS = 5000;
+  const AUTO_BUCKET_MS = 250;
+  const AUTO_REST_MS = 90000;
+  const AUTO_PUSHBACK_REST_MS = 180000;
+  const AUTO_LOW_BUFFER_SECONDS = 6;
+  const AUTO_PRESSURE_MS = 1000;
+  const AUTO_ACTIVITY_MS = 1500;
+
+  function createAutoConcurrency({ now = () => performance.now() } = {}) {
+    const listeners = new Set();
+    const state = {
+      level: 0, changedAt: 0, reason: "起步", steps: 0, trial: null,
+      // level index -> { until, hard }: hard rests (refusals) also cap every level above.
+      resting: new Map(),
+      buckets: [], lastActivityAt: -Infinity,
+      // Time the connections spent saturated: intervals of { from, to } within the window.
+      saturated: false, saturatedSince: 0, saturatedSpans: [],
+      aheadSamples: [], pressureSince: 0
+    };
+    const threads = () => AUTO_LADDER[state.level];
+
+    function pruneBuckets(at) {
+      while (state.buckets.length && at - state.buckets[0].at > AUTO_WINDOW_MS) state.buckets.shift();
+    }
+
+    // Bytes per second over the window, from completed pieces only: a hedge copy that lost
+    // its race is not delivery.
+    function throughput(at = now()) {
+      pruneBuckets(at);
+      if (!state.buckets.length) return 0;
+      const bytes = state.buckets.reduce((sum, item) => sum + item.bytes, 0);
+      // Over the time between the first and the last delivery in the window: an idle tail
+      // (nothing wanted) is not slowness.
+      return bytes * 1000 / Math.max(1000, state.buckets.at(-1).at - state.buckets[0].at + AUTO_BUCKET_MS);
+    }
+
+    // The share of the window during which every slot was busy and pieces were queued.
+    function saturation(at = now()) {
+      const from = at - AUTO_WINDOW_MS;
+      state.saturatedSpans = state.saturatedSpans.filter((span) => span.to > from);
+      let busy = state.saturatedSpans.reduce((sum, span) => sum + Math.max(0, span.to - Math.max(span.from, from)), 0);
+      if (state.saturated) busy += Math.max(0, at - Math.max(state.saturatedSince, from));
+      return Math.min(1, busy / AUTO_WINDOW_MS);
+    }
+
+    function resting(level, at) {
+      const rest = state.resting.get(level);
+      if (!rest) return null;
+      if (rest.until <= at) { state.resting.delete(level); return null; }
+      return rest;
+    }
+
+    function setLevel(level, reason, trial) {
+      const previous = threads();
+      const at = now();
+      state.level = level;
+      state.changedAt = at;
+      state.reason = reason;
+      state.steps += 1;
+      state.trial = trial || null;
+      state.pressureSince = 0;
+      for (const listener of listeners) {
+        try { listener({ threads: threads(), previous, reason }); } catch (_error) {}
+      }
+    }
+
+    // Up one level. A level resting after a refusal caps the climb; one resting after a
+    // fruitless trial is skipped only by a strong signal (a stall), not by pressure.
+    function stepUp(reason, strong) {
+      const at = now();
+      if (at - state.changedAt < AUTO_STEP_COOLDOWN_MS) return false;
+      if (resting(state.level, at)?.hard) return false;
+      let next = state.level + 1;
+      while (next < AUTO_LADDER.length) {
+        const rest = resting(next, at);
+        if (!rest) break;
+        if (rest.hard || !strong) return false;
+        next += 1;
+      }
+      if (next >= AUTO_LADDER.length) return false;
+      setLevel(next, reason, { from: state.level, level: next, at, baseline: throughput(at), stalled: false });
+      return true;
+    }
+
+    function stepDown(target, restLevel, reason, restMs, hard) {
+      state.resting.set(restLevel, { until: now() + restMs, hard });
+      if (target >= state.level) return false;
+      setLevel(target, reason, null);
+      return true;
+    }
+
+    // A step up has had its time: did the extra connections deliver? Only judged when the
+    // connections were busy meanwhile; an idle download (buffer full) proves nothing, and
+    // so does a stall in between. Without any gain the step goes back to where it started.
+    function judgeTrial(at) {
+      const trial = state.trial;
+      if (!trial || at - trial.at < AUTO_TRIAL_MS) return;
+      state.trial = null;
+      if (trial.stalled || saturation(at) < 0.6 || trial.baseline <= 0) return;
+      if (throughput(at) < trial.baseline) {
+        stepDown(trial.from, trial.level, `${AUTO_LADDER[trial.level]} 线程没有比 ${AUTO_LADDER[trial.from]} 线程更快`, AUTO_REST_MS, false);
+      }
+    }
+
+    return Object.freeze({
+      ladder: AUTO_LADDER,
+      threads,
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      // A piece arrived whole.
+      delivered(bytes, at = now()) {
+        const last = state.buckets.at(-1);
+        if (last && at - last.at < AUTO_BUCKET_MS) last.bytes += bytes;
+        else state.buckets.push({ at, bytes });
+        pruneBuckets(at);
+        judgeTrial(at);
+      },
+      // Bytes are flowing on some connection right now.
+      activity(at = now()) {
+        state.lastActivityAt = at;
+      },
+      // The connections' state whenever it changes.
+      demand(active, limit, queued, at = now()) {
+        const saturated = active >= limit && queued > 0;
+        if (saturated === state.saturated) return;
+        if (state.saturated) state.saturatedSpans.push({ from: state.saturatedSince, to: at });
+        state.saturated = saturated;
+        state.saturatedSince = at;
+        saturation(at);
+      },
+      // The player stalled: more threads at once.
+      stall(reason = "播放卡了一下") {
+        if (state.trial) state.trial.stalled = true;
+        return stepUp(reason, true);
+      },
+      // The buffer ahead of the playhead, a few times a second while playing. A low buffer
+      // that has not grown over the last second although bytes keep arriving, for a whole
+      // second, means the connections are too few.
+      buffer(ahead, playing, at = now()) {
+        state.aheadSamples.push({ at, ahead });
+        while (state.aheadSamples.length && at - state.aheadSamples[0].at > AUTO_PRESSURE_MS + AUTO_BUCKET_MS) state.aheadSamples.shift();
+        const earlier = state.aheadSamples.find((item) => at - item.at >= AUTO_PRESSURE_MS);
+        const downloading = at - state.lastActivityAt < AUTO_ACTIVITY_MS;
+        const pressed = playing && downloading && ahead < AUTO_LOW_BUFFER_SECONDS && earlier && ahead <= earlier.ahead + 0.05;
+        if (!pressed) { state.pressureSince = 0; return false; }
+        if (!state.pressureSince) { state.pressureSince = at; return false; }
+        if (at - state.pressureSince < AUTO_PRESSURE_MS) return false;
+        state.pressureSince = 0;
+        return stepUp("缓冲跟不上播放", false);
+      },
+      // A connection waited too long for its first byte while every slot was busy.
+      slow() {
+        return saturation() >= 0.6 ? stepUp("连接排队等太久", false) : false;
+      },
+      // The server refused the load: back one level, and nothing climbs past this one for
+      // a while.
+      pushback(status) {
+        return stepDown(Math.max(0, state.level - 1), state.level, `服务器返回 ${status}`, AUTO_PUSHBACK_REST_MS, true);
+      },
+      // A new playback session: what the buffer did before means nothing now.
+      newSession() {
+        state.aheadSamples.length = 0;
+        state.pressureSince = 0;
+        state.trial = null;
+        state.buckets.length = 0;
+        state.saturatedSpans.length = 0;
+        if (state.saturated) state.saturatedSince = now();
+      },
+      status() {
+        const at = now();
+        return {
+          threads: threads(), level: state.level, reason: state.reason, steps: state.steps, changedAt: state.changedAt,
+          throughputBps: Math.round(throughput(at)), saturation: Math.round(saturation(at) * 100) / 100,
+          buckets: state.buckets.length, activityAgeMs: Math.round(at - state.lastActivityAt),
+          resting: [...state.resting.entries()].filter(([, rest]) => rest.until > at).map(([level, rest]) => ({ threads: AUTO_LADDER[level], hard: rest.hard, forMs: Math.round(rest.until - at) })),
+          trial: state.trial ? { from: AUTO_LADDER[state.trial.from], level: AUTO_LADDER[state.trial.level], ageMs: Math.round(at - state.trial.at), baselineBps: Math.round(state.trial.baseline), stalled: state.trial.stalled } : null
+        };
+      },
+      reset() {
+        state.level = 0; state.changedAt = 0; state.reason = "起步"; state.steps = 0; state.trial = null;
+        state.resting.clear(); state.buckets.length = 0; state.lastActivityAt = -Infinity;
+        state.saturated = false; state.saturatedSince = 0; state.saturatedSpans.length = 0;
+        state.aheadSamples.length = 0; state.pressureSince = 0;
+      }
+    });
+  }
+  const autoConcurrency = createAutoConcurrency();
+  // Every downloader on the page follows the controller's count at once.
+  const autoFollowers = new Set();
+  autoConcurrency.subscribe(() => {
+    for (const ref of autoFollowers) {
+      const follow = ref.deref();
+      if (follow) follow(); else autoFollowers.delete(ref);
+    }
+  });
 
   function createDownloader(options) {
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
@@ -592,15 +809,24 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
     // tells whether the previous normalization is still valid.
     let rawSettings = null;
     let normalizedSettings = null;
+    let autoView = null;
     function config() {
       const raw = getSettings();
       if (raw !== rawSettings || !normalizedSettings) {
         rawSettings = raw;
         normalizedSettings = core.normalizeSettings(raw);
+        autoView = null;
       }
-      return normalizedSettings;
+      if (!normalizedSettings.autoConcurrency) return normalizedSettings;
+      // In the automatic mode the thread count is the controller's, everything else the viewer's.
+      const threads = autoConcurrency.threads();
+      if (!autoView || autoView.concurrency !== threads) autoView = { ...normalizedSettings, concurrency: threads };
+      return autoView;
     }
     const semaphore = new Semaphore(config().concurrency);
+    const applySettings = () => semaphore.setLimit(config().concurrency);
+    autoFollowers.add(new WeakRef(applySettings));
+    semaphore.onChange = (active, limit, queued) => { if (config().autoConcurrency) autoConcurrency.demand(active, limit, queued); };
 
     // What one connection typically delivers here and how long a sub-chunk typically
     // takes. Sub-chunk sizing and the hedge delay follow these measurements.
@@ -636,6 +862,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
         const bytes = new Uint8Array(await response.arrayBuffer());
         received.bytes += bytes.byteLength;
         received.chunks?.push(bytes);
+        if (settings.autoConcurrency) autoConcurrency.activity();
         onTransfer({ phase: "progress", id: transferId, bytes: bytes.byteLength });
         return bytes;
       }
@@ -666,6 +893,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
           // The recorder keeps what a failed attempt already received, so a retry or a
           // hedge copy can ask only for the missing tail.
           received.chunks?.push(chunk);
+          if (settings.autoConcurrency) autoConcurrency.activity();
           onTransfer({ phase: "progress", id: transferId, bytes: chunk.byteLength });
         }
       } finally {
@@ -744,6 +972,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
         }
         // Received bytes tell a dead node (0 KiB) apart from a transfer that stalled midway.
         resolver.failure(url, error, received.bytes);
+        if (settings.autoConcurrency) {
+          if (error?.status === 412 || error?.status === 429) autoConcurrency.pushback(error.status);
+          else if (!canceled && error?.name === "TimeoutError" && received.bytes === 0) autoConcurrency.slow();
+        }
         onTransfer({ phase: canceled ? "cancel" : "error", id: transferId, error });
         throw error;
       } finally {
@@ -910,6 +1142,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
             controllers.forEach((controller) => {
               if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
             });
+            if (settings.autoConcurrency) autoConcurrency.delivered(piece.length);
             return winner;
           } catch (aggregate) {
             lastError = aggregate?.errors?.at?.(-1) || aggregate;
@@ -1248,10 +1481,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
       };
     }
 
-    return Object.freeze({ downloadRange, applySettings: () => semaphore.setLimit(config().concurrency) });
+    return Object.freeze({ downloadRange, applySettings, getConcurrency: () => semaphore.limit });
   }
 
-  root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader });
+  root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader, createAutoConcurrency, autoConcurrency });
 })(globalThis);
 
 
@@ -1723,7 +1956,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
     const s = root.__BILI_RANGE_CORE__.normalizeSettings(value || {});
     // mode "custom" uses only the servers in customHosts; the shared core keeps Bilibili's
     // video servers and drops anything else.
-    return { enabled: s.enabled, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
+    // 自动线程数 is on unless switched off, as in the browser version; concurrency is then only
+    // the manual choice, used again when it is switched off.
+    return { enabled: s.enabled, autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
   };
   let current;
   try {
@@ -1735,7 +1970,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.3.0-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.4.0-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
@@ -1817,6 +2052,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
       ? log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "download")
       : log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
   });
+  // The thread count a request may use: the controller's level with 自动线程数 on (see
+  // client.js for its signals), otherwise the one set by hand.
+  const autoConcurrency = root.__BILI_IDM_DOWNLOADER_FACTORY__.autoConcurrency;
+  const threadsNow = () => { const settings = api.getSettings(); return settings.autoConcurrency && autoConcurrency ? autoConcurrency.threads() : settings.concurrency; };
   // This is the shared browser downloader. The adapter changes only its host environment.
   const downloader = root.__BILI_IDM_DOWNLOADER_FACTORY__.createDownloader({
     getSettings: api.getSettings, onTransfer,
@@ -1909,7 +2148,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
         // Small audio/index requests must not lower the shared semaphore to 1.
         // Use the original downloader's metadata race for tiny ranges instead.
         signal: controller.signal, parallel: true,
-        maxConcurrency: range.length < 128 * 1024 ? 1 : api.getSettings().concurrency,
+        maxConcurrency: range.length < 128 * 1024 ? 1 : threadsNow(),
         kind: range.length <= 64 * 1024 ? "meta" : rep?._btrKind || "video", startup,
         onOrderedChunk(bytes) {
           if (controller.signal.aborted || ticket !== generation) throw new DOMException("视频已切换", "AbortError");
@@ -2028,7 +2267,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
       resolvers.clear(); representations.clear(); totals.clear(); bans.reset();
       log("已切换视频", "旧视频的下载任务已取消。", "info", "takeover");
     },
-    snapshot: () => ({ ...stats, generation, pending: pending.size, bannedHosts: bans.hosts() }),
+    snapshot: () => ({ ...stats, generation, pending: pending.size, bannedHosts: bans.hosts(), threads: threadsNow() }),
     restore() {
       for (const controller of pending) controller.abort(new DOMException("加速已停止", "AbortError"));
       root.fetch = nativeFetch; root.XMLHttpRequest = NativeXHR;
@@ -2042,6 +2281,35 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
   "use strict";
   const api = root.__BTR_DESKTOP__, notices = root.__BTR_RUNTIME_NOTICES__, view = root.__BTR_NOTIFICATION_VIEW__;
   const attached = new WeakSet(); let player = null, video = null, identity = "";
+  // 自动线程数 (the controller lives in the shared idm-downloader.js). The client's own video
+  // element tells it what the browser version's player tells it there: a stall once playback
+  // had started, and a low buffer that stops growing while bytes arrive. A new video or a
+  // seek starts the buffer watch afresh.
+  const auto = root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency;
+  const autoOn = () => { const settings = api.getSettings(); return settings.enabled && settings.autoConcurrency; };
+  let watched = null, watchEvents = null;
+  function watch(element) {
+    if (!auto || element === watched) return;
+    watchEvents?.abort(); watchEvents = null; watched = element; auto.newSession();
+    if (!element) return;
+    const events = watchEvents = new AbortController();
+    const on = (name, handler) => element.addEventListener(name, handler, { signal: events.signal });
+    let started = false; // playing since the last load or seek
+    on("emptied", () => { started = false; auto.newSession(); });
+    on("seeking", () => { started = false; auto.newSession(); });
+    on("playing", () => { started = true; });
+    on("waiting", () => { if (started && autoOn() && !element.seeking && !element.paused) auto.stall("播放卡了一下"); });
+    on("timeupdate", () => {
+      if (!started || !autoOn()) return;
+      const now = element.currentTime, ranges = element.buffered;
+      let ahead = 0;
+      for (let i = 0; i < ranges.length; i++) if (ranges.start(i) <= now + 0.25 && ranges.end(i) >= now - 0.25) ahead = ranges.end(i) - now;
+      auto.buffer(Math.max(0, ahead), !element.paused && !element.seeking);
+    });
+  }
+  auto?.subscribe(({ threads, previous, reason }) => {
+    if (autoOn()) notices.log(threads > previous ? `线程数加到 ${threads}` : `线程数退回 ${threads}`, `${previous} → ${threads}：${reason}。`, "info", "", identity, "download");
+  });
   function bind(next) {
     if (!next?.on || attached.has(next)) return;
     attached.add(next);
@@ -2053,7 +2321,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
       notices.log("已收到客户端播放地址", "视频界面和字幕仍由客户端负责。", "success", "", identity, "takeover");
     });
     next.on("Player_Initialized", scan);
-    next.on("Player_Dispose", () => { if (player === next) { api.transport.switchRoute(""); notices.detach(); player = video = null; identity = ""; } });
+    next.on("Player_Dispose", () => { if (player === next) { api.transport.switchRoute(""); notices.detach(); watch(null); player = video = null; identity = ""; } });
   }
   function hookFactory() {
     const factory = root.nano?.createPlayer;
@@ -2078,8 +2346,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
     if (next !== player || key !== identity) {
       notices.detach(); player = next; identity = key; video = null;
       api.transport.switchRoute(key);
+      auto?.newSession();
     }
     bind(next);
+    watch(element?.isConnected ? element : null);
     if (element?.isConnected && element !== video && key && api.transport.snapshot().routeAcceleratedRequests > 0) {
       video = element;
       // The persistent status says takeover only once a real accelerated request completes.
@@ -2091,7 +2361,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
   root.addEventListener("pagehide", () => { clearInterval(timer); notices.detach(); api.transport.restore(); }, { once: true });
   api.getStatus = () => {
     const media = root.biliPlayer?.mediaElement?.();
-    return { version: api.version, adapterRevision: api.adapterRevision, transport: api.transport.snapshot(), playback: media ? { currentTime: media.currentTime, duration: Number.isFinite(media.duration) ? media.duration : 0, paused: media.paused, readyState: media.readyState, width: media.videoWidth, height: media.videoHeight, buffered: Array.from({length:media.buffered.length}, (_,i) => [media.buffered.start(i), media.buffered.end(i)]), decodedFrames: media.getVideoPlaybackQuality?.().totalVideoFrames || 0, error: media.error?.code || null } : null };
+    return { version: api.version, adapterRevision: api.adapterRevision, transport: api.transport.snapshot(), autoThreads: auto?.status() || null, playback: media ? { currentTime: media.currentTime, duration: Number.isFinite(media.duration) ? media.duration : 0, paused: media.paused, readyState: media.readyState, width: media.videoWidth, height: media.videoHeight, buffered: Array.from({length:media.buffered.length}, (_,i) => [media.buffered.start(i), media.buffered.end(i)]), decodedFrames: media.getVideoPlaybackQuality?.().totalVideoFrames || 0, error: media.error?.code || null } : null };
   };
 })(globalThis);
 
@@ -2155,6 +2425,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
     #btr-desktop-settings #btr-desktop-uninstall{background:#b93843;border-color:#d14c57;color:#fff}
     #btr-desktop-settings #btr-desktop-uninstall:hover:not(:disabled){background:#d04450}
     #btr-desktop-settings button:disabled{opacity:.55;cursor:default}
+    #btr-desktop-settings .btr-inline{margin:0}#btr-desktop-settings .btr-threads-row.btr-auto{opacity:.45}#btr-desktop-settings .btr-threads-row.btr-auto input{cursor:default}
+    #btr-desktop-settings .btr-live-row label{color:var(--text3,#9499a0);cursor:not-allowed}#btr-desktop-settings .btr-live-row input{cursor:not-allowed}
     #btr-desktop-settings input{accent-color:#d45b88}#btr-desktop-settings input[type=checkbox]{width:16px;height:16px;vertical-align:middle;margin:0 8px 0 0}
     #btr-desktop-settings input[type=range]{width:min(290px,55vw)}#btr-desktop-settings output{min-width:35px;color:#ef77a3;font-weight:600}
     #btr-desktop-settings .btr-debug-options{display:grid;grid-template-columns:repeat(2,minmax(145px,1fr));gap:12px;max-width:440px;padding:12px 0 6px}
@@ -2188,7 +2460,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
           <div class="btr-note btr-host-error" role="alert"></div>
           <div class="btr-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</div>
         </div>
-        <div class="btr-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
+        <div class="btr-row"><label><input type="checkbox" data-setting="autoConcurrency">自动线程数</label><span class="btr-note btr-inline">BTR将智能选择需要的线程数。</span></div>
+        <div class="btr-row btr-threads-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
+        <div class="btr-row btr-live-row"><label><input type="checkbox" id="btr-desktop-live" disabled>直播加速（敬请期待）</label><span class="btr-note btr-inline">直播加速已可在网页版中使用</span></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="errorNotices">显示错误</label><label><input type="checkbox" data-setting="debugNotices">Debug 模式</label></div>
         <div class="btr-debug-wrap" hidden><div class="btr-row"><button type="button" data-select="all">全选</button><button type="button" data-select="none">全不选</button></div><div class="btr-debug-options"></div></div>
         <div class="btr-row"><label><input type="checkbox" data-setting="autoCheckUpdates">自动检查 BTR 更新</label></div>
@@ -2261,6 +2535,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
         }));
         panel.querySelector("input[type=range]").value = String(Math.max(0, threadOptions.indexOf(settings.concurrency)));
         panel.querySelector("output").textContent = String(settings.concurrency);
+        // With 自动线程数 on the slider is the manual choice kept for later, not in use.
+        panel.querySelector("input[type=range]").disabled = settings.autoConcurrency;
+        panel.querySelector(".btr-threads-row").classList.toggle("btr-auto", settings.autoConcurrency);
         panel.querySelector(".btr-debug-wrap").hidden = !settings.debugNotices;
       });
       unsubscribeUpdate = api.onUpdate(update => {
@@ -2345,19 +2622,25 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.3.0-d1","adapterRevision":1};
     panel.append(
       group("线程撕裂者 CDN", "mode", [["mainland", "大陆 CDN"], ["overseas", "海外 CDN"], ["custom", "自定义"]]),
       hint,
-      group("并发线程", "concurrency", threads.map(value => [value, String(value)]))
+      group("并发线程", "concurrency", [["auto", "自动"], ...threads.map(value => [value, String(value)])])
     );
     const error = document.createElement("div"); error.className = "btr-save-error"; error.setAttribute("role", "status"); panel.append(error);
     panel.addEventListener("change", event => {
       const input = event.target; if (!(input instanceof HTMLInputElement) || !input.checked) return;
       const setting = input.dataset.btrSetting;
       if (setting !== "mode" && setting !== "concurrency") return;
-      try { api.setSettings({[setting]: setting === "concurrency" ? Number(input.value) : input.value}); error.textContent = ""; }
+      // "自动" switches 自动线程数 on; a number switches it off and sets that thread count.
+      const patch = setting === "mode" ? { mode: input.value }
+        : input.value === "auto" ? { autoConcurrency: true } : { autoConcurrency: false, concurrency: Number(input.value) };
+      try { api.setSettings(patch); error.textContent = ""; }
       catch (_) { error.textContent = "设置保存失败，请检查客户端的数据目录是否可写。"; }
     });
     target.insertBefore(panel, target.querySelector(".bpx-player-ctrl-setting-others") || target.firstChild);
     unsubscribe = api.onSettings(settings => {
-      for (const input of panel.querySelectorAll("[data-btr-setting]")) input.checked = input.value === String(settings[input.dataset.btrSetting]);
+      for (const input of panel.querySelectorAll("[data-btr-setting]")) {
+        const shown = input.dataset.btrSetting === "concurrency" && settings.autoConcurrency ? "auto" : String(settings[input.dataset.btrSetting]);
+        input.checked = input.value === shown;
+      }
       hint.hidden = settings.mode !== "custom";
       hint.textContent = settings.customHosts.length
         ? `已选 ${settings.customHosts.length} 个服务器，在客户端「设置 → 线程撕裂者」里增减。`

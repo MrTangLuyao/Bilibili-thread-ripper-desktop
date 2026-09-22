@@ -31,6 +31,17 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     const fresh = await page.evaluate(() => __BTR_DESKTOP__.getSettings());
     assert.deepEqual([fresh.mode, fresh.concurrency, fresh.errorNotices, fresh.debugNotices], ["mainland", 8, false, false]);
     assert.equal(await page.locator("#btr-desktop-settings output").textContent(), "8");
+    // 自动线程数 is on by default; the slider is then the manual choice, greyed out.
+    assert.equal(fresh.autoConcurrency, true);
+    assert.equal(await page.locator("[data-setting=autoConcurrency]").isChecked(), true);
+    assert.match(await page.locator("[data-setting=autoConcurrency]").locator("xpath=../following-sibling::span").textContent(), /BTR将智能选择需要的线程数。/);
+    assert.equal(await page.locator("#btr-desktop-threads").isDisabled(), true);
+    // Live acceleration is not in the client yet: a grey switch that cannot be ticked, and a
+    // line saying where it already works.
+    assert.equal(await page.locator("#btr-desktop-live").isDisabled(), true);
+    assert.equal(await page.locator("#btr-desktop-live").isChecked(), false);
+    assert.equal(await page.locator(".btr-live-row label").textContent(), "直播加速（敬请期待）");
+    assert.equal(await page.locator(".btr-live-row .btr-note").textContent(), "直播加速已可在网页版中使用");
     assert.equal(await page.locator('[data-mode="mainland"]').getAttribute("aria-pressed"), "true");
     assert.equal(await page.locator('[data-setting=autoCheckUpdates]').isChecked(),true);
     assert.equal(await page.evaluate(()=>__BTR_DESKTOP__.getUpdate().state),"idle");
@@ -66,9 +77,19 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     });
     await page.locator("#btr-desktop-player-settings").waitFor();
     assert.equal(await page.locator("#btr-desktop-player-settings + .bpx-player-ctrl-setting-others").count(), 1);
+    // The player menu shows 自动 first and checked; a number switches it off.
+    assert.equal(await page.locator('[name="btr-desktop-player-concurrency"]').first().getAttribute("value"), "auto");
+    assert.equal(await page.locator('[name="btr-desktop-player-concurrency"][value="auto"]').isChecked(), true);
     await page.locator('[name="btr-desktop-player-concurrency"][value="64"]').check();
-    await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().concurrency === 64);
+    await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().concurrency === 64 && __BTR_DESKTOP__.getSettings().autoConcurrency === false);
     assert.equal(await page.locator("#btr-desktop-settings output").textContent(), "64");
+    assert.equal(await page.locator("[data-setting=autoConcurrency]").isChecked(), false);
+    assert.equal(await page.locator("#btr-desktop-threads").isDisabled(), false);
+    await page.locator('[name="btr-desktop-player-concurrency"][value="auto"]').check();
+    await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().autoConcurrency === true && __BTR_DESKTOP__.getSettings().concurrency === 64);
+    assert.equal(await page.locator("[data-setting=autoConcurrency]").isChecked(), true);
+    await page.locator('[name="btr-desktop-player-concurrency"][value="64"]').check();
+    await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().autoConcurrency === false);
     await page.locator('[name="btr-desktop-player-mode"][value="overseas"]').check();
     await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().mode === "overseas");
     await page.evaluate(() => { const old=document.querySelector('.bpx-player-ctrl-setting-menu-right'); const next=old.cloneNode(false); next.innerHTML='<div class="bpx-player-ctrl-setting-others">其他设置</div>'; old.replaceWith(next); });
@@ -77,6 +98,40 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(await page.locator('[name="btr-desktop-player-mode"][value="overseas"]').isChecked(), true);
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({concurrency:16,mode:"mainland"}));
     console.log("PASS native player CDN/thread settings persist, synchronize and remount after switching");
+    // 自动线程数 in the client: its own video element stalls once playing has started, and the
+    // thread count the transport hands the downloader goes up. Off, a stall changes nothing;
+    // a stall before the first frame is startup, not a stall.
+    const autoSignals = await page.evaluate(async () => {
+      const auto = __BILI_IDM_DOWNLOADER_FACTORY__.autoConcurrency;
+      const video = document.createElement("video"); document.body.append(video);
+      let paused = false; Object.defineProperty(video, "paused", { get: () => paused });
+      const listeners = {};
+      window.biliPlayer = { getManifest: () => ({ bvid: "BVauto", cid: 7 }), mediaElement: () => video, on: (name, fn) => { listeners[name] = fn; } };
+      __BTR_DESKTOP__.synchronizePlayer();
+      const threads = () => __BTR_DESKTOP__.transport.snapshot().threads;
+      const stall = () => video.dispatchEvent(new Event("waiting"));
+      const until = async (condition, ms) => { const end = performance.now() + ms; while (performance.now() < end && !condition()) { stall(); await new Promise(r => setTimeout(r, 100)); } return condition(); };
+      __BTR_DESKTOP__.setSettings({ autoConcurrency: false, concurrency: 16 });
+      video.dispatchEvent(new Event("playing"));
+      await until(() => false, 3000);
+      const whenOff = { level: auto.threads(), transport: threads() };
+      __BTR_DESKTOP__.setSettings({ autoConcurrency: true });
+      video.dispatchEvent(new Event("seeking"));
+      await until(() => false, 600);
+      const beforeFirstFrame = auto.threads();
+      video.dispatchEvent(new Event("playing"));
+      const stepped = await until(() => auto.threads() > 8, 4000);
+      const result = { whenOff, beforeFirstFrame, stepped, level: auto.threads(), transport: threads(), status: __BTR_DESKTOP__.getStatus().autoThreads?.threads };
+      window.biliPlayer = undefined; listeners.Player_Dispose?.(); video.remove();
+      __BTR_DESKTOP__.setSettings({ autoConcurrency: false, concurrency: 16 });
+      return result;
+    });
+    assert.deepEqual(autoSignals.whenOff, { level: 8, transport: 16 }, "switched off, a stall must not change anything");
+    assert.equal(autoSignals.beforeFirstFrame, 8, "waiting before the first frame is startup, not a stall");
+    assert.equal(autoSignals.stepped, true);
+    assert.equal(autoSignals.transport, autoSignals.level, "the transport hands the downloader the controller's count");
+    assert.equal(autoSignals.status, autoSignals.level);
+    console.log("PASS automatic threads: the client's video element stalls, the count steps up to", autoSignals.level, "and the transport uses it; off or before the first frame nothing changes");
     // Custom CDN: known servers are ticked, others typed in; only Bilibili's video servers are accepted.
     assert.equal(await page.locator(".btr-custom").isVisible(), false);
     await page.locator('#btr-desktop-settings [data-mode="custom"]').click();
@@ -310,7 +365,7 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     const stalled = await stalling.newPage(); stalled.on("pageerror", error => errors.push(error.message));
     await stalled.goto(origin);
     const resumed = await stalled.evaluate(() => new Promise((resolve, reject) => {
-      __BTR_DESKTOP__.setSettings({ concurrency: 32 });
+      __BTR_DESKTOP__.setSettings({ autoConcurrency: false, concurrency: 32 });
       __BTR_DESKTOP__.transport.switchRoute("video-stall:1");
       const started = performance.now();
       const run = (index, results) => {

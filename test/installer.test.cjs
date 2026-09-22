@@ -11,7 +11,7 @@ test("Windows PowerShell IEX installer completes against an isolated client",{sk
     // A later official full installer build that BTR has never seen.
     const next=new Asar(bytes);next.set("package.json",'{"name":"bilibili","version":"1.19.0"}');next.set("index.js","nextBuild();");fs.writeFileSync(path.join(dir,"next-app.asar"),next.pack());
     const file=path.join(__dirname,"Fixture.cs");
-    const compile=spawnSync("C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",["/nologo","/target:exe",`/out:${path.join(client,"哔哩哔哩.exe")}`,file],{encoding:"utf8",windowsHide:true});assert.equal(compile.status,0,compile.stdout+compile.stderr);
+    const compile=spawnSync("C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe",["/nologo","/target:winexe",`/out:${path.join(client,"哔哩哔哩.exe")}`,file],{encoding:"utf8",windowsHide:true});assert.equal(compile.status,0,compile.stdout+compile.stderr);
     const command=`& ([ScriptBlock]::Create([IO.File]::ReadAllText('${path.join(__dirname,"installer-harness.ps1").replace(/'/g,"''")}'))) -Project '${root.replace(/'/g,"''")}' -Fixture '${dir.replace(/'/g,"''")}'`;
     const run=spawnSync("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",["-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(command,"utf16le").toString("base64")],{encoding:"utf8",windowsHide:true,timeout:75000,env:{...process.env,BTR_TEST_NODE:process.execPath,BTR_TEST_LAUNCH_MARKER:path.join(dir,"official-launch.txt")}});
     assert.equal(run.status,0,run.stdout+run.stderr);assert.match(run.stdout,/PASS Windows PowerShell/);console.log(run.stdout.trim());

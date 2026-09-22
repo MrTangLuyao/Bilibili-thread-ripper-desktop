@@ -57,6 +57,10 @@
       ? log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "download")
       : log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "download")
   });
+  // The thread count a request may use: the controller's level with 自动线程数 on (see
+  // client.js for its signals), otherwise the one set by hand.
+  const autoConcurrency = root.__BILI_IDM_DOWNLOADER_FACTORY__.autoConcurrency;
+  const threadsNow = () => { const settings = api.getSettings(); return settings.autoConcurrency && autoConcurrency ? autoConcurrency.threads() : settings.concurrency; };
   // This is the shared browser downloader. The adapter changes only its host environment.
   const downloader = root.__BILI_IDM_DOWNLOADER_FACTORY__.createDownloader({
     getSettings: api.getSettings, onTransfer,
@@ -149,7 +153,7 @@
         // Small audio/index requests must not lower the shared semaphore to 1.
         // Use the original downloader's metadata race for tiny ranges instead.
         signal: controller.signal, parallel: true,
-        maxConcurrency: range.length < 128 * 1024 ? 1 : api.getSettings().concurrency,
+        maxConcurrency: range.length < 128 * 1024 ? 1 : threadsNow(),
         kind: range.length <= 64 * 1024 ? "meta" : rep?._btrKind || "video", startup,
         onOrderedChunk(bytes) {
           if (controller.signal.aborted || ticket !== generation) throw new DOMException("视频已切换", "AbortError");
@@ -268,7 +272,7 @@
       resolvers.clear(); representations.clear(); totals.clear(); bans.reset();
       log("已切换视频", "旧视频的下载任务已取消。", "info", "takeover");
     },
-    snapshot: () => ({ ...stats, generation, pending: pending.size, bannedHosts: bans.hosts() }),
+    snapshot: () => ({ ...stats, generation, pending: pending.size, bannedHosts: bans.hosts(), threads: threadsNow() }),
     restore() {
       for (const controller of pending) controller.abort(new DOMException("加速已停止", "AbortError"));
       root.fetch = nativeFetch; root.XMLHttpRequest = NativeXHR;

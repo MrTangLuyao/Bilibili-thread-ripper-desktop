@@ -26,7 +26,9 @@ class Fixture {
         return 0;
     }
     static int Main(string[] args) {
-        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        // Built as a window program so that starting it, as the installer does with the real
+        // client, opens no console window. Its output still reaches the tests through pipes.
+        try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch (System.IO.IOException) { }
         if (args.Length == 0) {
             var marker = Environment.GetEnvironmentVariable("BTR_TEST_LAUNCH_MARKER");
             if (!String.IsNullOrEmpty(marker)) System.IO.File.AppendAllText(marker, "official-client-started\n");
