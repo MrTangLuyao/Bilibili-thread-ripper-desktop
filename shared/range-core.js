@@ -99,6 +99,13 @@
         .map(normalizeCdnHost)
         .filter((host, index, all) => host && all.indexOf(host) === index)
         .slice(0, 32),
+      // The round button in the page corner that opens the settings panel, and where the
+      // viewer dragged it: which side, and how far down as a share of the window height.
+      floatingButton: source.floatingButton !== false,
+      // Where the viewer dragged it, as shares of the window (0 = flush left, 1 = flush
+      // right); null when it was never moved.
+      floatingButtonLeft: source.floatingButtonLeft != null && Number(source.floatingButtonLeft) >= 0 && Number(source.floatingButtonLeft) <= 1 ? Number(source.floatingButtonLeft) : null,
+      floatingButtonTop: source.floatingButtonTop != null && Number(source.floatingButtonTop) >= 0 && Number(source.floatingButtonTop) <= 1 ? Number(source.floatingButtonTop) : null,
       debugNotices: source.debugNotices === true,
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),

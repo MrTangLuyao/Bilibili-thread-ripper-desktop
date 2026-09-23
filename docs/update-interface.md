@@ -7,8 +7,8 @@
 ```json
 {
   "schema": 1,
-  "version": "0.9.4.0-d1",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.4.0-d1.zip",
+  "version": "0.9.4.2-d1",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.4.2-d1.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }
