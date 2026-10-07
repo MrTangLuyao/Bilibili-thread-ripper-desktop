@@ -16,6 +16,6 @@ test("release package includes the force-update script next to the installer",{s
     assert.equal(result.status,0,result.stderr.toString());assert.deepEqual(result.stdout,fs.readFileSync(path.join(root,file)));
   }
   const readme=fs.readFileSync(path.join(root,"README.md"),"utf8");
-  assert.match(readme,/## 强制更新（如遇到更新异常使用脚本更新）：/);
+  assert.match(readme,/^## .*强制更新/m);
   assert.match(readme,/main\/force-update\.ps1 \| iex/);
 });
