@@ -98,7 +98,7 @@ internal static class Guard {
         }
     }
     internal static int Run(string[] args) {
-        if (args.Length == 0 || args[0] != "guard" || Program.Admin()) return 2;
+        if (args.Length == 0 || args[0] != "guard") return 2;
         var pointer = Program.ReadPointer();
         if (!Program.OwnedBy(pointer, Program.Root)) return 0;
         string client = pointer.ContainsKey("clientPath") ? pointer["clientPath"] as string : null;

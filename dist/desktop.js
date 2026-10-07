@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -92,6 +92,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision"
     const requested = Math.trunc(Number(source.concurrency));
     return {
       enabled: source.enabled !== false,
+      theme: ["light", "dark"].includes(source.theme) ? source.theme : "auto",
       // The live module on live.bilibili.com; the master switch above still rules.
       liveEnabled: source.liveEnabled !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
@@ -113,7 +114,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision"
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
-      // 自动线程数: the downloader picks the thread count itself, between 8 and 32, and
+      // 自动线程数: the downloader picks the thread count itself, between 8 and 64, and
       // `concurrency` above is only what the viewer set by hand. Off unless asked for.
       autoConcurrency: source.autoConcurrency === true,
       minChunkBytes: 64 * 1024,
@@ -644,7 +645,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision"
   }
 
   // 自动线程数. One controller for the whole page: the thread count starts at 8 and climbs a
-  // ladder towards 32 on every sign that the download is not keeping up with playback
+  // ladder towards 64 on every sign that the download is not keeping up with playback
   // (the player stalls; a low buffer stops growing while bytes keep arriving; a
   // connection waits too long for its first byte while every slot is busy). Every step up
   // is a trial: ten seconds later the bytes per second must have grown, otherwise the
@@ -658,7 +659,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision"
   // ahead, the count steps back down to the level the page had before. A sign of not keeping
   // up meanwhile climbs as usual and ends the start there; so does half a minute without
   // catching up. From then on the rules above carry on.
-  const AUTO_LADDER = Object.freeze([8, 12, 16, 24, 32]);
+  const AUTO_LADDER = Object.freeze([8, 12, 16, 24, 32, 48, 64]);
   const AUTO_STARTUP_LEVEL = 2;
   const AUTO_STARTUP_COMFORT_SECONDS = 15;
   const AUTO_STARTUP_MAX_MS = 30000;
@@ -1982,7 +1983,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision"
       const style = document.createElement("style");
       style.textContent = `
         :host{color-scheme:dark}
-        .stack{position:absolute;inset:0;overflow:hidden}
+        .stack{position:absolute;inset:0;overflow:hidden;user-select:none;-webkit-user-select:none}
         .layer{position:absolute;inset:0}
         .errors{z-index:1}
         .entry{position:absolute;top:0;left:2px;right:2px;min-width:0}
@@ -2211,7 +2212,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision"
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.9.29.1-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.7.2-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),

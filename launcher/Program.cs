@@ -173,7 +173,6 @@ internal static class Program {
             }
             string action = args.Length > 0 && !args[0].StartsWith("-") ? args[0] : "launch";
             if (WindowActions.Contains(action)) {
-                if (Admin()) throw new Exception("请用普通权限运行维护程序，只有修改客户端文件时才请求管理员授权。");
                 if (!args.Contains("--window")) return Relay(args);
                 bool silent = Silent(args);
                 if (!silent) Application.EnableVisualStyles();
@@ -190,7 +189,6 @@ internal static class Program {
                 return 0;
             }
             if (action != "launch") throw new Exception("未知命令，请运行 BTR_Desktop.exe --help。");
-            if (Admin()) throw new Exception("请用普通权限启动 BTR_Desktop，客户端不应以管理员身份播放视频。");
             var status = RunNode(folder, "status");
             if (!Flag(status, "supported")) { if (interactive) MessageBox.Show("无法识别这个客户端的程序结构。本次只启动官方播放器，不强行接入 BTR。", "BTR 提示", MessageBoxButtons.OK, MessageBoxIcon.Information); }
             else if (!Flag(status, "current")) Apply(folder, "repair");

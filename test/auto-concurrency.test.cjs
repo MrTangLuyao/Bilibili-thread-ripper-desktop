@@ -1,6 +1,6 @@
 "use strict";
 // 自动线程数: the controller in idm-downloader.js that moves the thread count between 8 and
-// 32. Runs against a fake clock; nothing is downloaded.
+// 64. Runs against a fake clock; nothing is downloaded.
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const SOURCE=fs.existsSync(path.join(__dirname,"../shared/range-core.js"))?path.join(__dirname,"../shared"):path.join(__dirname,"../src");
 function load(){
@@ -20,15 +20,15 @@ function controller(){
   return {auto,clock,changes,flow};
 }
 
-test("the setting is off unless asked for, and the ladder runs from 8 to 32",()=>{
+test("the setting is off unless asked for, and the ladder runs from 8 to 64",()=>{
   const {core,idm}=load();
   assert.equal(core.normalizeSettings({}).autoConcurrency,false);
   assert.equal(core.normalizeSettings({autoConcurrency:true}).autoConcurrency,true);
-  assert.deepEqual([...idm.autoConcurrency.ladder],[8,12,16,24,32]);
+  assert.deepEqual([...idm.autoConcurrency.ladder],[8,12,16,24,32,48,64]);
   assert.equal(idm.autoConcurrency.threads(),8);
 });
 
-test("a stall steps the count up at once, never two steps within the cooldown, never past 32",()=>{
+test("a stall steps the count up at once, never two steps within the cooldown, never past 64",()=>{
   const {auto,clock,changes}=controller();
   clock.at+=5000;
   assert.equal(auto.stall(),true);assert.equal(auto.threads(),12);
@@ -36,8 +36,10 @@ test("a stall steps the count up at once, never two steps within the cooldown, n
   clock.at+=3000;assert.equal(auto.stall(),true);assert.equal(auto.threads(),16);
   clock.at+=3000;auto.stall();clock.at+=3000;auto.stall();
   assert.equal(auto.threads(),32);
-  clock.at+=3000;assert.equal(auto.stall(),false);assert.equal(auto.threads(),32);
-  assert.deepEqual(changes.map(c=>c.threads),[12,16,24,32]);
+  clock.at+=3000;auto.stall();clock.at+=3000;auto.stall();
+  assert.equal(auto.threads(),64);
+  clock.at+=3000;assert.equal(auto.stall(),false);assert.equal(auto.threads(),64);
+  assert.deepEqual(changes.map(c=>c.threads),[12,16,24,32,48,64]);
   assert.equal(changes[0].previous,8);assert.equal(changes[0].reason,"播放卡了一下");
 });
 
