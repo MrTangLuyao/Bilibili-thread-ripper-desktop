@@ -1,0 +1,42 @@
+name: 🐞 卡顿 / 播放问题
+description: 视频卡顿、加载慢、播放不正常，或者安装、更新出错
+title: "[问题] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢你愿意反馈！为了更快找到原因，麻烦写上下面几项。
+
+  - type: input
+    id: version
+    attributes:
+      label: BTR Desktop 版本
+      description: 客户端「设置」第一项「BTR 线程撕裂者」标题旁边就是版本号。
+      placeholder: 比如：2026.10.7.2-d1
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: 哔哩哔哩客户端版本
+      description: 客户端「设置」→「关于哔哩哔哩」里能看到。
+      placeholder: 比如：1.19.0
+    validations:
+      required: true
+
+  - type: input
+    id: network
+    attributes:
+      label: 所在地区和网络运营商
+      placeholder: 比如：美国，Verizon
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: 补充信息
+      description: 遇到的情况、截图、错误提示都可以写在这里。安装或更新出错的话，可以附上 `%LOCALAPPDATA%\BTR_Desktop\logs` 里的日志。
+      placeholder: 比如：打开 4K 视频后一直转圈，播一会儿又卡住
