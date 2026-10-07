@@ -1,6 +1,12 @@
 "use strict";
+const crypto = require("crypto");
 const RAW = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/";
 const VERSION = /^\d+\.\d+\.\d+\.\d+-d[1-9]\d*$/;
+// Public key for the manifest signing key held by the maintainer; used to reject
+// manifests that were not signed with the matching private key (MITM/compromised-host protection).
+const MANIFEST_PUBLIC_KEY = crypto.createPublicKey(
+  "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAGcO0t+EQAWnXDfjsB8GuUIgrmXxX7FZfJ6qUv0YBkDU=\n-----END PUBLIC KEY-----\n"
+);
 function validateManifest(value) {
   if (!value || value.schema !== 1 || !VERSION.test(value.version)) throw Error("Invalid desktop version manifest");
   if (!/^[a-f0-9]{64}$/i.test(value.sha256)) throw Error("Invalid update checksum");
@@ -8,7 +14,11 @@ function validateManifest(value) {
   const legacy = value.supportedClientVersions;
   if (legacy !== undefined && (!Array.isArray(legacy) || !legacy.every(v => /^\d+(\.\d+){2,3}$/.test(v)))) throw Error("Invalid legacy client list");
   if (value.downloadUrl !== `${RAW}packages/BTR_Desktop-${value.version}.zip`) throw Error("Update package must belong to this repository");
-  return {schema:1,version:value.version,sha256:value.sha256.toLowerCase(),downloadUrl:value.downloadUrl};
+  if (typeof value.signature !== "string") throw Error("Manifest is missing a signature");
+  const canonical = `${value.schema}|${value.version}|${value.sha256.toLowerCase()}|${value.downloadUrl}`;
+  const verified = crypto.verify(null, Buffer.from(canonical, "utf8"), MANIFEST_PUBLIC_KEY, Buffer.from(value.signature, "base64"));
+  if (!verified) throw Error("Manifest signature verification failed");
+  return {schema:1,version:value.version,sha256:value.sha256.toLowerCase(),downloadUrl:value.downloadUrl,signature:value.signature};
 }
 async function check(config, installed, fetchImpl = globalThis.fetch || require("./https-json.cjs")) {
   if (!config.enabled) return {state:"not-configured",message:"更新检查已关闭"};

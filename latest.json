@@ -3,6 +3,7 @@
   "version": "2026.10.7.2-d1",
   "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-2026.10.7.2-d1.zip",
   "sha256": "0ad6255cb19d8f445ec90937de50b95c9909598eb9566b16d626f24618cddde1",
+  "signature": "3MW4QybYgkFisjkfAdNOPNELJijoFYhuSqBR7Eb8GIbtWs3z+ZnJ6VUsaj0iNA4Cr2mbchIRD0eq9g/9Bt4YBw==",
   "supportedClientVersions": [
     "1.18.0"
   ]
