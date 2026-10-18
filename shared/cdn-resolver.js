@@ -12,7 +12,8 @@
     "upos-sz-mirrorbd.bilivideo.com",
     "upos-sz-mirror14b.bilivideo.com",
     "upos-sz-estgoss.bilivideo.com",
-    "upos-sz-mirrorcos.bilivideo.com"
+    "upos-sz-mirrorcos.bilivideo.com",
+    "upos-sz-mirrorcoso1.bilivideo.com"
   ]);
 
   const OVERSEAS_HOSTS = Object.freeze([
@@ -30,6 +31,19 @@
   function isAkamaiUrl(value) {
     try { return new URL(value).hostname.toLowerCase().endsWith(".akamaized.net"); }
     catch (_error) { return false; }
+  }
+
+  // A P2P or edge-cache relay (an mcdn node, or the mountaintoys.cn caches beside them) wraps
+  // the file in its own path and signature. Its address works only on relays: every ordinary
+  // node refuses it.
+  function isRelayUrl(value) {
+    try {
+      const url = new URL(value);
+      return /(?:^|\.)mcdn\./i.test(url.hostname) || /^\/v1\/resource\//i.test(url.pathname)
+        || String(url.searchParams.get("os") || "").toLowerCase() === "mcdn";
+    } catch (_error) {
+      return false;
+    }
   }
 
   function safeMediaUrl(value) {
@@ -71,7 +85,10 @@
       .filter((value, index, all) => all.indexOf(value) === index);
     const custom = customServers(mode, customHosts);
     const hosts = custom.length ? custom : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
-    const donor = originals.find((url) => !isAkamaiUrl(url));
+    // A relay address moved to an ordinary node is refused there, so only ordinary addresses
+    // are moved to the other nodes.
+    const ordinary = originals.filter((url) => !isRelayUrl(url));
+    const donor = ordinary.find((url) => !isAkamaiUrl(url));
     // Some overseas accounts are given nothing but akamaized.net addresses. That used to leave
     // no node at all in mainland mode and a single one in overseas mode. The nodes accept
     // those signatures too, so only in that case the akamaized.net addresses are the donors.
@@ -80,7 +97,7 @@
     // keeps the first requests spread over several nodes.
     const synthetic = (donor
       ? hosts.map((host) => swapOrdinaryHost(donor, host))
-      : hosts.flatMap((host) => originals.map((url) => swapOrdinaryHost(url, host, true))))
+      : hosts.flatMap((host) => ordinary.map((url) => swapOrdinaryHost(url, host, true))))
       .map(safeMediaUrl)
       .filter(Boolean);
     const allowedOriginals = custom.length
@@ -88,7 +105,10 @@
       : mode === "overseas"
         ? originals.filter((url) => !MAINLAND_HOSTS.includes(hostOf(url)))
         : originals.filter((url) => MAINLAND_HOSTS.includes(hostOf(url)));
-    return [...allowedOriginals, ...synthetic].filter((value, index, all) => all.indexOf(value) === index);
+    // Bilibili sometimes hands a track out only through relays. No other node can serve it
+    // then, so the relays are used whatever the mode, rather than giving the video up.
+    const relays = ordinary.length ? [] : originals;
+    return [...allowedOriginals, ...synthetic, ...relays].filter((value, index, all) => all.indexOf(value) === index);
   }
 
   function hostOf(value) {
@@ -372,6 +392,7 @@
     createBanList,
     createResolver,
     isAkamaiUrl,
+    isRelayUrl,
     representationUrls,
     swapOrdinaryHost
   });

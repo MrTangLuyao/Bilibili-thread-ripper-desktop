@@ -141,7 +141,7 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(await page.locator('#btr-desktop-settings [data-mode="custom"]').getAttribute("aria-pressed"), "true");
     assert.equal(await page.locator(".btr-custom").isVisible(), true);
     assert.equal(await page.locator(".btr-custom-empty").isVisible(), true);
-    assert.equal(await page.locator("#btr-desktop-settings [data-host]").count(), 12);
+    assert.equal(await page.locator("#btr-desktop-settings [data-host]").count(), 13);
     assert.equal(await page.locator('[name="btr-desktop-player-mode"][value="custom"]').isChecked(), true);
     assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /还没选服务器/);
     await page.locator('[data-host="upos-sz-mirrorcos.bilivideo.com"]').check();
@@ -150,11 +150,11 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       await page.locator("#btr-desktop-host").fill(typed); await page.locator("#btr-desktop-host-add").click();
       assert.equal(await page.locator(".btr-host-error").textContent(), message);
     }
-    await page.locator("#btr-desktop-host").fill("https://UPOS-sz-mirrorcoso1.bilivideo.com/upgcxcode/x.m4s?sign=1"); await page.locator("#btr-desktop-host").press("Enter");
+    await page.locator("#btr-desktop-host").fill("https://CN-gdfs-ct-01-01.bilivideo.com/upgcxcode/x.m4s?sign=1"); await page.locator("#btr-desktop-host").press("Enter");
     assert.equal(await page.locator(".btr-host-error").textContent(), "");
     assert.equal(await page.locator("#btr-desktop-host").inputValue(), "");
-    assert.equal(await page.locator(".btr-manual-host span").textContent(), "upos-sz-mirrorcoso1.bilivideo.com");
-    await second.waitForFunction(() => JSON.stringify(__BTR_DESKTOP__.getSettings().customHosts) === '["upos-sz-mirrorcos.bilivideo.com","upos-sz-mirrorcoso1.bilivideo.com"]');
+    assert.equal(await page.locator(".btr-manual-host span").textContent(), "cn-gdfs-ct-01-01.bilivideo.com");
+    await second.waitForFunction(() => JSON.stringify(__BTR_DESKTOP__.getSettings().customHosts) === '["upos-sz-mirrorcos.bilivideo.com","cn-gdfs-ct-01-01.bilivideo.com"]');
     assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /已选 2 个服务器/);
     await page.reload();
     assert.equal(await page.locator('[data-host="upos-sz-mirrorcos.bilivideo.com"]').isChecked(), true);
@@ -252,7 +252,7 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     console.log("PASS a node with two 0 KiB replies is banned for the current video, skipped afterwards and restored on the next video");
     // Custom mode asks only the picked servers, not even the one the client named. Going back
     // to another mode applies to the next request of the same video.
-    const picked = ["upos-sz-mirrorcos.bilivideo.com", "upos-sz-mirrorcoso1.bilivideo.com"];
+    const picked = ["upos-sz-mirrorcos.bilivideo.com", "cn-gdfs-ct-01-01.bilivideo.com"];
     await page.waitForTimeout(300);
     const hitsSince = before => [...hostHits].filter(([host, count]) => count > (before.get(host) || 0)).map(([host]) => host).sort();
     let before = new Map(hostHits);
@@ -265,7 +265,7 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     }, picked);
     assert.deepEqual(custom, { bytes: 3 * 1048576, fallbacks: 0 });
     await page.waitForTimeout(300);
-    assert.deepEqual(hitsSince(before), picked);
+    assert.deepEqual(hitsSince(before), [...picked].sort());
     before = new Map(hostHits);
     const back = await page.evaluate(async () => {
       __BTR_DESKTOP__.setSettings({ mode: "mainland" });

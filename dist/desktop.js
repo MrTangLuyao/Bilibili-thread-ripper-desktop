@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -93,8 +93,12 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
     return {
       enabled: source.enabled !== false,
       theme: ["light", "dark"].includes(source.theme) ? source.theme : "auto",
-      // The live module on live.bilibili.com; the master switch above still rules.
-      liveEnabled: source.liveEnabled !== false,
+      // The live module on live.bilibili.com; the master switch above still rules. Off unless
+      // switched on: a viewer who never chose keeps Bilibili's own live player.
+      liveEnabled: source.liveEnabled === true,
+      // 剧集加速: episode pages (/bangumi/play/ep… and ss…: anime, films, documentaries, …),
+      // sped up in the compatibility mode only.
+      episodeEnabled: source.episodeEnabled !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
@@ -154,7 +158,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
     "upos-sz-mirrorbd.bilivideo.com",
     "upos-sz-mirror14b.bilivideo.com",
     "upos-sz-estgoss.bilivideo.com",
-    "upos-sz-mirrorcos.bilivideo.com"
+    "upos-sz-mirrorcos.bilivideo.com",
+    "upos-sz-mirrorcoso1.bilivideo.com"
   ]);
 
   const OVERSEAS_HOSTS = Object.freeze([
@@ -172,6 +177,19 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
   function isAkamaiUrl(value) {
     try { return new URL(value).hostname.toLowerCase().endsWith(".akamaized.net"); }
     catch (_error) { return false; }
+  }
+
+  // A P2P or edge-cache relay (an mcdn node, or the mountaintoys.cn caches beside them) wraps
+  // the file in its own path and signature. Its address works only on relays: every ordinary
+  // node refuses it.
+  function isRelayUrl(value) {
+    try {
+      const url = new URL(value);
+      return /(?:^|\.)mcdn\./i.test(url.hostname) || /^\/v1\/resource\//i.test(url.pathname)
+        || String(url.searchParams.get("os") || "").toLowerCase() === "mcdn";
+    } catch (_error) {
+      return false;
+    }
   }
 
   function safeMediaUrl(value) {
@@ -213,7 +231,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
       .filter((value, index, all) => all.indexOf(value) === index);
     const custom = customServers(mode, customHosts);
     const hosts = custom.length ? custom : mode === "overseas" ? OVERSEAS_HOSTS : MAINLAND_HOSTS;
-    const donor = originals.find((url) => !isAkamaiUrl(url));
+    // A relay address moved to an ordinary node is refused there, so only ordinary addresses
+    // are moved to the other nodes.
+    const ordinary = originals.filter((url) => !isRelayUrl(url));
+    const donor = ordinary.find((url) => !isAkamaiUrl(url));
     // Some overseas accounts are given nothing but akamaized.net addresses. That used to leave
     // no node at all in mainland mode and a single one in overseas mode. The nodes accept
     // those signatures too, so only in that case the akamaized.net addresses are the donors.
@@ -222,7 +243,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
     // keeps the first requests spread over several nodes.
     const synthetic = (donor
       ? hosts.map((host) => swapOrdinaryHost(donor, host))
-      : hosts.flatMap((host) => originals.map((url) => swapOrdinaryHost(url, host, true))))
+      : hosts.flatMap((host) => ordinary.map((url) => swapOrdinaryHost(url, host, true))))
       .map(safeMediaUrl)
       .filter(Boolean);
     const allowedOriginals = custom.length
@@ -230,7 +251,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
       : mode === "overseas"
         ? originals.filter((url) => !MAINLAND_HOSTS.includes(hostOf(url)))
         : originals.filter((url) => MAINLAND_HOSTS.includes(hostOf(url)));
-    return [...allowedOriginals, ...synthetic].filter((value, index, all) => all.indexOf(value) === index);
+    // Bilibili sometimes hands a track out only through relays. No other node can serve it
+    // then, so the relays are used whatever the mode, rather than giving the video up.
+    const relays = ordinary.length ? [] : originals;
+    return [...allowedOriginals, ...synthetic, ...relays].filter((value, index, all) => all.indexOf(value) === index);
   }
 
   function hostOf(value) {
@@ -514,6 +538,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
     createBanList,
     createResolver,
     isAkamaiUrl,
+    isRelayUrl,
     representationUrls,
     swapOrdinaryHost
   });
@@ -2212,7 +2237,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.7.2-d1","adapterRevision"
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.7.2-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.19.1-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),

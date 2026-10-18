@@ -8,7 +8,7 @@
 
 把线程撕裂者带到官方 Windows 客户端里，原本的播放器、字幕、弹幕和快捷键都保留
 
-当前版本 **2026.10.7.2-d1** · 已在官方客户端 **1.19.0** 实测
+当前版本 **2026.10.19.1-d1** · 已在官方客户端 **1.19.0** 实测
 
 [![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows-0078d4?style=flat-square)](#-安装) [![网页版](https://img.shields.io/badge/%E7%BD%91%E9%A1%B5%E7%89%88-%E6%B2%B9%E7%8C%B4%E8%84%9A%E6%9C%AC-fb7299?style=flat-square)](https://github.com/MrTangLuyao/Bilibili-thread-ripper) [![Stars](https://img.shields.io/github/stars/MrTangLuyao/Bilibili-thread-ripper-desktop?style=flat-square&color=f5b301)](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop/stargazers) [![许可证](https://img.shields.io/github/license/MrTangLuyao/Bilibili-thread-ripper-desktop?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&style=flat-square&color=3b82f6)](LICENSE)
 

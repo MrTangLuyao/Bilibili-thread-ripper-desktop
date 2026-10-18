@@ -15,7 +15,7 @@ const mediaUrl=host=>`https://${host}/upgcxcode/00/00/1/1-1-30080.m4s?deadline=1
 const dead=Object.assign(new Error("Range 校验失败：HTTP 503"),{name:"Error"});
 const aborted=new DOMException("并发副本已取消","AbortError");
 
-test("new defaults: mainland CDN, 8 threads, error notices off",()=>{
+test("new defaults: mainland CDN, 8 threads, error notices off, live off, episodes on",()=>{
   const {core}=load();
   const defaults=core.normalizeSettings({});
   assert.equal(defaults.mode,"mainland");assert.equal(defaults.concurrency,8);assert.equal(defaults.errorNotices,false);assert.equal(defaults.debugNotices,false);
@@ -25,6 +25,8 @@ test("new defaults: mainland CDN, 8 threads, error notices off",()=>{
   assert.equal(defaults.theme,"auto");
   for(const theme of ["auto","light","dark"]) assert.equal(core.normalizeSettings({theme}).theme,theme);
   for(const theme of ["invalid",null,{},1]) assert.equal(core.normalizeSettings({theme}).theme,"auto");
+  assert.equal(defaults.liveEnabled,false);assert.equal(core.normalizeSettings({liveEnabled:true}).liveEnabled,true);
+  assert.equal(defaults.episodeEnabled,true);assert.equal(core.normalizeSettings({episodeEnabled:false}).episodeEnabled,false);
 });
 
 test("a node is banned after two failures that delivered 0 bytes, and only for the current video",()=>{
@@ -50,9 +52,9 @@ test("resolvers skip banned nodes but never end up with no address",()=>{
   const bans=cdn.createBanList();
   const resolver=cdn.createResolver({baseUrl:mediaUrl("upos-sz-mirrorali.bilivideo.com")},()=> "mainland",bans);
   const hostsOf=list=>Array.from(list,url=>new URL(url).hostname);
-  assert.equal(resolver.urls().length,8);
+  assert.equal(resolver.urls().length,cdn.MAINLAND_HOSTS.length);
   resolver.failure(mediaUrl("upos-sz-mirrorhw.bilivideo.com"),dead,0);
-  assert.equal(resolver.urls().length,8,"one strike does not ban");
+  assert.equal(resolver.urls().length,cdn.MAINLAND_HOSTS.length,"one strike does not ban");
   resolver.failure(mediaUrl("upos-sz-mirrorhw.bilivideo.com"),dead,0);
   for(const list of [resolver.urls(),resolver.ordered(0),resolver.rangeCandidates(),resolver.rescueCandidates(),resolver.startupCandidates()]){
     assert.ok(!hostsOf(list).includes("upos-sz-mirrorhw.bilivideo.com"));assert.ok(list.length>0);
@@ -63,7 +65,7 @@ test("resolvers skip banned nodes but never end up with no address",()=>{
   const audio=cdn.createResolver({baseUrl:mediaUrl("upos-sz-mirrorbos.bilivideo.com")},()=> "mainland",bans);
   assert.ok(!hostsOf(audio.urls()).includes("upos-sz-mirrorhw.bilivideo.com"));
   for(const host of cdn.MAINLAND_HOSTS){bans.record(mediaUrl(host),0,dead);bans.record(mediaUrl(host),0,dead);}
-  assert.equal(resolver.urls().length,8,"with every node banned the original list is used again");
+  assert.equal(resolver.urls().length,cdn.MAINLAND_HOSTS.length,"with every node banned the original list is used again");
   assert.ok(resolver.startupCandidates().length>0);
   // Without a ban list the resolver keeps its old behaviour.
   const plain=cdn.createResolver({baseUrl:mediaUrl("upos-sz-mirrorali.bilivideo.com")},()=> "mainland");
@@ -121,7 +123,7 @@ test("akamaized.net addresses are host-swapped only when Bilibili hands out noth
   const hostsOf=list=>Array.from(new Set(Array.from(list,url=>new URL(url).hostname)));
   const akamaiOnly={baseUrl:akamaiUrl("cosovbv"),backupUrl:[akamaiUrl("akam")]};
   const mainland=cdn.representationUrls(akamaiOnly,"mainland");
-  assert.equal(mainland.length,16,"two addresses on each of the eight mainland nodes");
+  assert.equal(mainland.length,cdn.MAINLAND_HOSTS.length*2,"two addresses on each mainland node");
   assert.deepEqual(hostsOf(mainland),Array.from(cdn.MAINLAND_HOSTS));
   // Node-major order: the first requests already cover both addresses.
   assert.deepEqual(Array.from(mainland.slice(0,2),url=>new URL(url).searchParams.get("os")),["cosovbv","akam"]);
@@ -131,11 +133,47 @@ test("akamaized.net addresses are host-swapped only when Bilibili hands out noth
   // With an ordinary address present nothing changes: it is the only donor.
   const mixed={baseUrl:akamaiUrl("akam"),backupUrl:[mediaUrl("upos-sz-mirrorcosov.bilivideo.com")]};
   const mixedMainland=cdn.representationUrls(mixed,"mainland");
-  assert.equal(mixedMainland.length,8);
+  assert.equal(mixedMainland.length,cdn.MAINLAND_HOSTS.length);
   assert.ok(mixedMainland.every(url=>new URL(url).searchParams.get("os")==="x"));
   assert.equal(cdn.swapOrdinaryHost(akamaiUrl("akam"),"upos-sz-mirrorali.bilivideo.com"),null);
   // A peer CDN's port must not follow the address to another node.
   assert.equal(new URL(cdn.swapOrdinaryHost("https://xy1x2x3x4xy.mcdn.bilivideo.cn:4483/upgcxcode/a/b.m4s?e=1","upos-sz-mirrorali.bilivideo.com")).port,"");
+});
+
+const RELAY_FILE="/upgcxcode/00/00/1/1-1-30080.m4s";
+const relayUrl=`https://xy1x2x3x4xy.mcdn.bilivideo.cn:8082/v1/resource${RELAY_FILE}?e=1&os=mcdn&upsig=r`;
+const edgeUrl=`https://ccf958o.edge.mountaintoys.cn:4483/v1/resource${RELAY_FILE}?e=1&os=mcdn&upsig=e`;
+
+test("a relay address is never moved to the ordinary nodes (#47)",()=>{
+  const {cdn}=load();
+  assert.equal(cdn.isRelayUrl(relayUrl),true);assert.equal(cdn.isRelayUrl(edgeUrl),true);
+  assert.equal(cdn.isRelayUrl(mediaUrl("upos-sz-estgoss.bilivideo.com")),false);assert.equal(cdn.isRelayUrl(akamaiUrl("akam")),false);
+  // The ordinary backup donates its address, wherever the relays were listed.
+  const mixed=cdn.representationUrls({baseUrl:relayUrl,backupUrl:[edgeUrl,mediaUrl("upos-sz-estgoss.bilivideo.com")]},"mainland");
+  assert.equal(mixed.length,cdn.MAINLAND_HOSTS.length);
+  assert.ok(mixed.every(url=>!cdn.isRelayUrl(url)),"no relay address on an ordinary node");
+  // With nothing but relays, the relays themselves are used, in every mode.
+  for(const mode of ["mainland","overseas"]){
+    assert.deepEqual(Array.from(cdn.representationUrls({baseUrl:relayUrl,backupUrl:[edgeUrl]},mode)),[relayUrl,edgeUrl]);
+  }
+  assert.deepEqual(Array.from(cdn.representationUrls({baseUrl:relayUrl,backupUrl:[edgeUrl]},"custom",["upos-sz-mirrorali.bilivideo.com"])),[relayUrl,edgeUrl]);
+});
+
+test("a track handed out only through relays downloads instead of ending the video (#47)",{timeout:60000},async()=>{
+  const {cdn,idm}=load();
+  let refusedCount=0;
+  const nativeFetch=async(url,init)=>{
+    const parsed=new URL(url);
+    if(parsed.hostname.includes(".mcdn."))return new Response("",{status:502});
+    if(!parsed.hostname.endsWith("mountaintoys.cn")&&parsed.pathname.startsWith("/v1/resource/")){refusedCount+=1;return new Response("",{status:403});}
+    const [,start,end]=/bytes=(\d+)-(\d+)/.exec(init.headers.Range).map(Number);
+    return new Response(new Uint8Array(end-start+1),{status:206,headers:{"Content-Range":`bytes ${start}-${end}/8388608`}});
+  };
+  const downloader=idm.createDownloader({getSettings:()=>({concurrency:8,mode:"mainland"}),nativeFetch});
+  const resolver=cdn.createResolver({baseUrl:relayUrl,backupUrl:[edgeUrl]},()=> "mainland",cdn.createBanList());
+  const range={start:0,end:1024*1024-1,length:1024*1024};
+  assert.equal((await downloader.downloadRange(range,resolver,{parallel:true,kind:"audio"})).bytes.length,range.length);
+  assert.equal(refusedCount,0,"no relay address was asked of an ordinary node");
 });
 
 test("a refused address is dropped instead of the nodes it was tried on",()=>{

@@ -13,7 +13,7 @@ body:
     attributes:
       label: BTR Desktop 版本
       description: 客户端「设置」第一项「BTR 线程撕裂者」标题旁边就是版本号。
-      placeholder: 比如：2026.10.7.2-d1
+      placeholder: 比如：2026.10.19.1-d1
     validations:
       required: true
 
