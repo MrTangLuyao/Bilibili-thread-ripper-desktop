@@ -27,46 +27,83 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       if (route.request().url().includes("slow")) await new Promise(resolve => setTimeout(resolve, 150));
       await route.fulfill({ status: 206, headers: { "Content-Range": `bytes ${start}-${end}/8388608`, "Content-Length": String(bytes.length), "Access-Control-Allow-Origin": "*", "Access-Control-Expose-Headers": "Content-Range,Content-Length", "Content-Type": "video/mp4" }, body: bytes });
     });
-    await page.goto(origin); await page.locator("#btr-desktop-settings").waitFor();
+    // The client restores its cookies when it starts; a leftover one must not answer the guide.
+    await context.addCookies([{ name: "BTR.guideDone", value: "1", url: origin }]);
+    await page.goto(origin);
+    // The settings are the browser version's panel, opened from the same floating button.
+    const panelSelector = "#__bilibili_thread_ripper_settings__ .btr-popup";
+    const openPanel = async (tab, name) => {
+      await tab.evaluate(() => { if (!__BTR_SETTINGS_PANEL__.isOpen()) __BTR_SETTINGS_PANEL__.open({ advanced: true }); });
+      await tab.locator(panelSelector).waitFor(); if (await tab.locator("#advanced summary").isVisible()) await tab.locator("#advanced summary").click();
+      await tab.locator(`#__bilibili_thread_ripper_settings__ [data-tab="${name}"]`).click();
+    };
+    const closePanel = tab => tab.evaluate(() => __BTR_SETTINGS_PANEL__.close());
+    await page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher").waitFor();
+    // First use: the guide points at the button until it is answered, then never again.
+    await page.locator("#__bilibili_thread_ripper_guide__ p").waitFor();
+    assert.equal(await page.locator("#__bilibili_thread_ripper_guide__ p").textContent(), "点这里打开全新 线程撕裂者 设置");
+    assert.equal(await page.locator("#btr-desktop-settings").count(), 0);
+    assert.equal(await page.locator("#btr-desktop-nav").count(), 0);
     const fresh = await page.evaluate(() => __BTR_DESKTOP__.getSettings());
-    assert.deepEqual([fresh.mode, fresh.concurrency, fresh.errorNotices, fresh.debugNotices], ["mainland", 8, false, false]);
-    assert.equal(await page.locator("#btr-desktop-settings output").textContent(), "8");
-    // 自动线程数 is on by default; the slider is then the manual choice, greyed out.
-    assert.equal(fresh.autoConcurrency, true);
-    assert.equal(await page.locator("[data-setting=autoConcurrency]").isChecked(), true);
-    assert.match(await page.locator("[data-setting=autoConcurrency]").locator("xpath=../following-sibling::span").textContent(), /BTR将智能选择需要的线程数。/);
-    assert.equal(await page.locator("#btr-desktop-threads").isDisabled(), true);
-    // Live acceleration is not in the client yet: a grey switch that cannot be ticked, and a
-    // line saying where it already works.
-    assert.equal(await page.locator("#btr-desktop-live").isDisabled(), true);
-    assert.equal(await page.locator("#btr-desktop-live").isChecked(), false);
-    assert.equal(await page.locator(".btr-live-row label").textContent(), "直播加速（敬请期待）");
-    assert.equal(await page.locator(".btr-live-row .btr-note").textContent(), "直播加速已可在网页版中使用");
-    assert.equal(await page.locator('[data-mode="mainland"]').getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator('[data-setting=autoCheckUpdates]').isChecked(),true);
+    assert.deepEqual([fresh.mode, fresh.concurrency, fresh.errorNotices, fresh.debugNotices, fresh.autoConcurrency], ["mainland", 8, false, false, true]);
+    await page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher").evaluate(node => node.click());
+    await page.locator(panelSelector).waitFor();
+    assert.equal(await page.locator("#__bilibili_thread_ripper_guide__").count(), 0);
+    await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().guideDone === true);
+    assert.match(await page.locator(`${panelSelector} .version`).textContent(), /d\d+/);
+    assert.equal(await page.locator("#btr-desktop-uninstall").isVisible(), true);
+    // The client cannot open links: the GitHub button copies the address.
+    await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+    await page.locator("#github-link").click();
+    await page.locator('.btr-update-status:has-text("已复制项目地址")').waitFor();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop");
+    assert.equal(context.pages().length, 1);
+    // What belongs to the browser version's player is left out.
+    assert.equal(await page.locator(".takeover-select").isVisible(), false);
+    assert.equal(await page.locator("#advanced summary").isVisible(), true);
+    await page.locator("#advanced summary").click();
+    assert.deepEqual(await page.locator('#__bilibili_thread_ripper_settings__ [role="tab"]:visible').allTextContents(), ["网络", "功能", "界面"]);
+    assert.equal(await page.locator("#auto-concurrency").isChecked(), true);
+    await page.locator('#__bilibili_thread_ripper_settings__ [data-tab="features"]').click();
+    assert.equal(await page.locator("#live-enabled").isVisible(), false);
+    assert.equal(await page.locator("#block-international").isVisible(), false);
+    assert.equal(await page.locator("#btr-desktop-auto-update").isChecked(), true);
+    assert.equal(await page.locator("#btr-desktop-uninstall").textContent(), "卸载 BTR");
+    assert.equal(await page.locator("#btr-desktop-uninstall").isVisible(), false);
     assert.equal(await page.evaluate(()=>__BTR_DESKTOP__.getUpdate().state),"idle");
-    await page.locator('[data-setting=autoCheckUpdates]').uncheck();
+    await page.locator("#btr-desktop-auto-update").evaluate(node => node.click());
+    await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().autoCheckUpdates === false);
+    await page.locator("#debug-notices").evaluate(node => node.click());
+    await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().debugNotices === true);
     await page.reload();
-    assert.equal(await page.locator('[data-setting=autoCheckUpdates]').isChecked(),false);
-    assert.equal(await page.evaluate(()=>__BTR_DESKTOP__.getUpdate().state),"idle");
-    assert.equal(await page.locator(".settings_catalog button").first().textContent(), "线程撕裂者");
-    assert.equal(await page.locator("#btr-desktop-settings + .theme-item").count(), 1);
-    assert.equal(await page.locator("#btr-desktop-check-update + #btr-desktop-uninstall").textContent(), "卸载 BTR");
-    const buttons = await page.evaluate(() => {
-      const check=document.querySelector('#btr-desktop-check-update'),remove=document.querySelector('#btr-desktop-uninstall');
-      const a=check.getBoundingClientRect(),b=remove.getBoundingClientRect();
-      return {after:b.left>a.right,sameRow:Math.abs(a.top-b.top)<1,color:getComputedStyle(remove).backgroundColor};
-    });
-    assert.deepEqual(buttons,{after:true,sameRow:true,color:"rgb(185, 56, 67)"});
-    assert.equal(await page.locator("[data-setting=errorNotices]").isChecked(), false);
-    await page.locator("[data-setting=debugNotices]").check();
-    assert.equal(await page.locator("[data-category]:checked").count(), 6);
-    await page.locator("[data-category=download]").uncheck();
-    await page.reload();
-    assert.equal(await page.locator("[data-category=download]").isChecked(), false);
+    await page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher").waitFor();
+    assert.equal(await page.locator("#__bilibili_thread_ripper_guide__").count(), 0);
+    assert.equal(await page.evaluate(() => __BTR_DESKTOP__.getSettings().autoCheckUpdates), false);
+    assert.equal(await page.evaluate(() => __BTR_DESKTOP__.getSettings().debugNotices), true);
+    // 主题 and the floating button's switch and place are kept by the desktop settings.
+    const kept = await page.evaluate(() => { const s = __BTR_DESKTOP__.setSettings({ theme: "dark", floatingButtonLeft: 0, floatingButtonTop: 0.5 }); return [s.theme, s.floatingButton, s.floatingButtonLeft, s.floatingButtonTop]; });
+    assert.deepEqual(kept, ["dark", true, 0, 0.5]);
     const second = await context.newPage(); await second.goto(origin);
-    assert.equal(await second.locator('[data-setting=autoCheckUpdates]').isChecked(),false);
-    await page.locator('[data-setting=autoCheckUpdates]').check();
+    assert.equal(await second.evaluate(() => __BTR_DESKTOP__.getSettings().autoCheckUpdates), false);
+    await page.evaluate(() => __BTR_DESKTOP__.setSettings({ autoCheckUpdates: true }));
+    // 恢复默认设置 asks once, in place, and goes back to first use, the guide included.
+    await page.evaluate(() => __BTR_DESKTOP__.setSettings({ concurrency: 32, autoConcurrency: false, mode: "overseas", theme: "dark", floatingButtonLeft: 0, floatingButtonTop: 0.5, autoCheckUpdates: false }));
+    await openPanel(page, "features");
+    const reset = page.locator("#reset-settings");
+    assert.equal(await reset.textContent(), "恢复默认设置");
+    await reset.click();
+    assert.equal(await reset.textContent(), "确认？");
+    assert.equal(await page.evaluate(() => __BTR_DESKTOP__.getSettings().concurrency), 32);
+    await reset.click();
+    await page.locator("#__bilibili_thread_ripper_guide__ p").waitFor();
+    assert.equal(await page.locator(panelSelector).count(), 0);
+    assert.deepEqual(await page.evaluate(() => { const s = __BTR_DESKTOP__.getSettings(); return [s.concurrency, s.autoConcurrency, s.mode, s.theme, s.floatingButtonLeft, s.floatingButtonTop, s.autoCheckUpdates, s.guideDone]; }), [8, true, "mainland", "auto", null, null, true, false]);
+    await page.reload();
+    await page.locator("#__bilibili_thread_ripper_guide__ p").waitFor();
+    await page.evaluate(() => { __BTR_SETTINGS_PANEL__.open(); __BTR_SETTINGS_PANEL__.close(); });
+    await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().guideDone === true);
+    await page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher").waitFor();
+    assert.equal(await page.locator("#__bilibili_thread_ripper_guide__").count(), 0);
     await second.waitForFunction(()=>__BTR_DESKTOP__.getSettings().autoCheckUpdates===true);
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({ concurrency: 16 }));
     await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().concurrency === 16);
@@ -82,12 +119,9 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(await page.locator('[name="btr-desktop-player-concurrency"][value="auto"]').isChecked(), true);
     await page.locator('[name="btr-desktop-player-concurrency"][value="64"]').check();
     await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().concurrency === 64 && __BTR_DESKTOP__.getSettings().autoConcurrency === false);
-    assert.equal(await page.locator("#btr-desktop-settings output").textContent(), "64");
-    assert.equal(await page.locator("[data-setting=autoConcurrency]").isChecked(), false);
-    assert.equal(await page.locator("#btr-desktop-threads").isDisabled(), false);
+
     await page.locator('[name="btr-desktop-player-concurrency"][value="auto"]').check();
     await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().autoConcurrency === true && __BTR_DESKTOP__.getSettings().concurrency === 64);
-    assert.equal(await page.locator("[data-setting=autoConcurrency]").isChecked(), true);
     await page.locator('[name="btr-desktop-player-concurrency"][value="64"]').check();
     await second.waitForFunction(() => __BTR_DESKTOP__.getSettings().autoConcurrency === false);
     await page.locator('[name="btr-desktop-player-mode"][value="overseas"]').check();
@@ -136,64 +170,54 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(autoSignals.status, autoSignals.level);
     console.log("PASS automatic threads: a seek opens with 16, the client's video element stalls, the count steps up to", autoSignals.level, "and the transport uses it; off or before the first frame nothing changes");
     // Custom CDN: known servers are ticked, others typed in; only Bilibili's video servers are accepted.
-    assert.equal(await page.locator(".btr-custom").isVisible(), false);
-    await page.locator('#btr-desktop-settings [data-mode="custom"]').click();
-    assert.equal(await page.locator('#btr-desktop-settings [data-mode="custom"]').getAttribute("aria-pressed"), "true");
-    assert.equal(await page.locator(".btr-custom").isVisible(), true);
-    assert.equal(await page.locator(".btr-custom-empty").isVisible(), true);
-    assert.equal(await page.locator("#btr-desktop-settings [data-host]").count(), 13);
+    // Custom CDN: the panel is the browser version's and has its own tests; here, that its
+    // choices reach the desktop settings and the player menu's hint.
+    await openPanel(page, "network");
+    assert.equal(await page.locator("#custom-hosts").isVisible(), false);
+    await page.locator('input[name="mode"][value="custom"]').evaluate(node => node.click());
+    assert.equal(await page.locator("#custom-hosts").isVisible(), true);
+    await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().mode === "custom");
     assert.equal(await page.locator('[name="btr-desktop-player-mode"][value="custom"]').isChecked(), true);
-    assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /还没选服务器/);
-    await page.locator('[data-host="upos-sz-mirrorcos.bilivideo.com"]').check();
-    assert.equal(await page.locator(".btr-custom-empty").isVisible(), false);
-    for (const [typed, message] of [["https://example.com/a.m4s", "这不是 B 站的视频服务器地址。"], ["upos-sz-mirrorcos.bilivideo.com", "这个服务器已经在列表里了。"]]) {
-      await page.locator("#btr-desktop-host").fill(typed); await page.locator("#btr-desktop-host-add").click();
-      assert.equal(await page.locator(".btr-host-error").textContent(), message);
-    }
-    await page.locator("#btr-desktop-host").fill("https://CN-gdfs-ct-01-01.bilivideo.com/upgcxcode/x.m4s?sign=1"); await page.locator("#btr-desktop-host").press("Enter");
-    assert.equal(await page.locator(".btr-host-error").textContent(), "");
-    assert.equal(await page.locator("#btr-desktop-host").inputValue(), "");
-    assert.equal(await page.locator(".btr-manual-host span").textContent(), "cn-gdfs-ct-01-01.bilivideo.com");
-    await second.waitForFunction(() => JSON.stringify(__BTR_DESKTOP__.getSettings().customHosts) === '["upos-sz-mirrorcos.bilivideo.com","cn-gdfs-ct-01-01.bilivideo.com"]');
-    assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /已选 2 个服务器/);
-    await page.reload();
-    assert.equal(await page.locator('[data-host="upos-sz-mirrorcos.bilivideo.com"]').isChecked(), true);
-    assert.equal(await page.locator(".btr-manual-host").count(), 1);
-    await page.locator("#btr-desktop-settings").screenshot({path:path.join(root,"test-output","custom-cdn.png")});
-    await page.locator(".btr-manual-host button").click();
-    assert.equal(await page.locator(".btr-manual-host").count(), 0);
-    assert.deepEqual(await page.evaluate(() => __BTR_DESKTOP__.getSettings().customHosts), ["upos-sz-mirrorcos.bilivideo.com"]);
+    assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /还没选服务器.*悬浮球/);
+    await page.locator("#host-input").fill("https://example.com/a.m4s"); await page.locator("#host-input").press("Enter");
+    assert.equal(await page.locator("#host-error").textContent(), "这不是 B 站的视频服务器地址。");
+    await page.locator("#host-input").fill("https://CN-gdfs-ct-01-01.bilivideo.com/upgcxcode/x.m4s?sign=1"); await page.locator("#host-input").press("Enter");
+    await second.waitForFunction(() => JSON.stringify(__BTR_DESKTOP__.getSettings().customHosts) === '["cn-gdfs-ct-01-01.bilivideo.com"]');
+    assert.match(await page.locator("#btr-desktop-player-settings .btr-custom-hint").textContent(), /已选 1 个服务器/);
+    await closePanel(page);
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({ customHosts: Array.from({ length: 40 }, (_, i) => `upos-sz-test${i}.bilivideo.com`).concat("evil.example.com") }));
     assert.equal(await page.evaluate(() => __BTR_DESKTOP__.getSettings().customHosts.length), 32);
-    await page.locator('[data-host="upos-sz-mirrorali.bilivideo.com"]').click();
-    assert.equal(await page.locator('[data-host="upos-sz-mirrorali.bilivideo.com"]').isChecked(), false);
-    assert.equal(await page.locator(".btr-host-error").textContent(), "最多选 32 个服务器。");
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({ mode: "mainland", customHosts: [] }));
-    assert.equal(await page.locator(".btr-custom").isVisible(), false);
+    console.log("PASS custom CDN: the panel saves to the desktop settings, the player menu follows, other sites are refused, limit of 32");
     console.log("PASS custom CDN: known and typed servers, refusal of other sites, limit of 32, persistence and synchronization");
+    await page.evaluate(() => __BTR_SETTINGS_PANEL__.open());
+    await page.locator(panelSelector).waitFor();
+    if (await page.locator("#advanced-back").isVisible()) await page.locator("#advanced-back").click();
+    await page.locator("#btr-desktop-check-update").waitFor();
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"available",message:"发现 0.9.1.1-d2",manifest:{version:"0.9.1.1-d2"}}},location.origin));
     await page.locator("#btr-desktop-install-update").waitFor({state:"visible"});
     assert.equal(await page.locator("#btr-desktop-install-update").textContent(), "更新到 0.9.1.1-d2");
     await page.locator("#btr-desktop-check-update").click();
     assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),true);
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"error",message:"测试网络失败"}},location.origin));
-    await page.waitForFunction(() => !document.querySelector('#btr-desktop-check-update').disabled);
+    await page.locator("#btr-desktop-check-update:not(:disabled)").waitFor();
     assert.equal(await page.locator("#btr-desktop-install-update").isVisible(),false);
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"current",message:"当前已是最新版本"}},location.origin));
-    await page.waitForFunction(() => document.querySelector('.btr-update-status').textContent === '当前已是最新版本');
+    await page.locator('.btr-update-status:has-text("当前已是最新版本")').waitFor();
     console.log("PASS update states: available, checking, error retry and current version");
     for (const state of ["confirming","uninstalling"]) {
       await page.evaluate(state => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state,message:"卸载测试"}},location.origin),state);
-      await page.waitForFunction(() => document.querySelector('#btr-desktop-uninstall').disabled);
+      await page.locator("#btr-desktop-uninstall:disabled").waitFor();
       assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),true);
       assert.equal(await page.locator("#btr-desktop-install-update").isVisible(),false);
     }
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"idle",message:"已取消卸载 BTR"}},location.origin));
-    await page.waitForFunction(() => !document.querySelector('#btr-desktop-uninstall').disabled);
+    await page.locator("#btr-desktop-uninstall:not(:disabled)").waitFor();
     assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),false);
     const images=path.join(root,"test-output");fs.mkdirSync(images,{recursive:true});
-    await page.locator("#btr-desktop-settings").screenshot({path:path.join(images,"d3-settings.png")});
-    console.log("PASS red uninstall button is immediately right of check update; confirmation and uninstall lock controls, cancellation restores them");
+    await page.locator("#__bilibili_thread_ripper_settings__ .btr-popup").screenshot({path:path.join(images,"panel-update.png")});
+    await closePanel(page);
+    console.log("PASS confirmation and uninstall lock the controls in the panel, cancellation restores them");
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({ debugNotices: false }));
     const fetchResult = await page.evaluate(async () => {
       const response = await fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/a.m4s", { headers: { Range: "bytes=0-1048575" } });

@@ -12,7 +12,7 @@
     // video servers and drops anything else.
     // 自动线程数 is on unless switched off, as in the browser version; concurrency is then only
     // the manual choice, used again when it is switched off.
-    return { enabled: s.enabled, autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
+    return { enabled: s.enabled, autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, theme: s.theme, floatingButton: s.floatingButton, floatingButtonLeft: s.floatingButtonLeft, floatingButtonTop: s.floatingButtonTop, guideDone: s.guideDone, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
   };
   let current;
   try {
@@ -23,17 +23,18 @@
   } catch (_) { current = normalize({}); }
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
+  const store = next => {
+    localStorage.setItem(KEY, JSON.stringify(next)); // Failure must not pretend to save.
+    current = next; emit(); channel?.postMessage(current);
+    return api.getSettings();
+  };
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.19.1-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.30.1-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
-    setSettings(patch) {
-      const next = normalize({ ...current, ...patch });
-      localStorage.setItem(KEY, JSON.stringify(next)); // Failure must not pretend to save.
-      current = next; emit(); channel?.postMessage(current);
-      return api.getSettings();
-    },
+    setSettings(patch) { return store(normalize({ ...current, ...patch })); },
+    resetSettings() { return store(normalize({})); },
     onSettings(fn) { listeners.add(fn); fn(api.getSettings()); return () => listeners.delete(fn); },
     update: Object.freeze({ state: "idle", message: "从 GitHub 检查 BTR 更新" })
   };

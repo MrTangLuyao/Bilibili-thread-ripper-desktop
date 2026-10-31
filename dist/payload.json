@@ -1,18 +1,19 @@
 {
-  "version": "2026.10.19.1-d1",
+  "version": "2026.10.30.1-d1",
   "adapterRevision": 1,
-  "sha256": "a02c1f300d11ee71cf6b016f5f4c98a417f5a557a8b4b058f2f1262f575fe0b0",
+  "sha256": "cfccd2e86e01246d0959a2bbaed8f721906ea96f0382a0472faaa32cdaf2e8cc",
   "files": {
-    "shared/range-core.js": "0ee0f7645e7649ba3b1c859bbaeb3a2e49c2bce0d36d773bbd1c8a3df82b8d7e",
-    "shared/cdn-resolver.js": "83db8e8969a804a2ff2f7012967eb95c590ed2032f59c7c483b538b91c4124a3",
-    "shared/idm-downloader.js": "c772f5b57bb8fe860475548c8286ea29f7913fd8ce056756dfca84fe1f5405d3",
+    "shared/range-core.js": "7a48306d3f48a4100c8a5e27c602706e152472047d4753e65c8e3df41f2cad03",
+    "shared/cdn-resolver.js": "3187e0c714b5d583be24f186d38684ee8cf1df2c0668f29c2806d18d4eb7c92e",
+    "shared/idm-downloader.js": "639412d7d94c4b15f85c050a7c962c836be7bd54babe1665892feb0bf7c006e2",
     "shared/runtime-notices.js": "54763461c5b6b167cf879612a2e1d0c6a71cebbde02e2702669a1fc7a2be7564",
-    "shared/notification-view.js": "13bfd21f1d6768194d49e7103de38afbd4be6cb969999020424ad9799b892b37",
-    "src/settings.js": "6df6040acb3554ac911a499350b0ad617d62b97873181f5a81c22303ca7c2fa3",
-    "src/transport.js": "af22ff6a3f8f70dbded5346b6c3d0d9ac34f70f337daa0b18005c8b1ef594d84",
-    "src/client.js": "65f56318eba1c1bf92f5b276b7731e3567877392e8454349c89a7005673b9818",
-    "src/updates.js": "4be36c1110458d8edd04d2429b614f6f0190c23ed28c70586ac0c47edad541b2",
-    "src/settings-view.js": "967dbe1a9d11dabd41cdd4c797057dcbf686ecb7918b2f55bae1ad93395c9378",
-    "src/player-settings.js": "21d151da22f7b2e4aa6dc33bd897f2490b237e4fbe48ba5cfa4fc1cf0891c348"
+    "shared/notification-view.js": "e47a99bdadb39337ae5625f1272e0a5a8c2b123583ff51f31a5b8caa0631a3fa",
+    "src/settings.js": "08d894c8a3a8300a6ea5b08141249e723c0de5a3da96d4a47dfe1c289c905678",
+    "src/transport.js": "f23123e7f5846aed0ccc0796821d067d56cf62bd0994f4c9e12f495ab19c7d08",
+    "src/client.js": "4272b00ad6170bcd6486314d5effbe47fd8d4948eacf38b313d20079bba4e5ad",
+    "src/updates.js": "07efc4dfda3f7929dd01850eb1aee825a898d110574978470e5972aac8260a2d",
+    "src/panel-bridge.js": "29f10053820eccf5a1eabc61bbf0d9e283169f5f7f455ddb50dafaeb74fe9f21",
+    "shared/settings-panel.js": "6ab7b95ba8b886df76584c1c476f37004cfeb79dc2a527008b338c7dc9b994ff",
+    "src/player-settings.js": "b2f799a3ca407bbd07951c6920330de1b52a3359415cc70d7846994cfcda0fa4"
   }
 }

@@ -96,6 +96,9 @@
       // 剧集加速: episode pages (/bangumi/play/ep… and ss…: anime, films, documentaries, …),
       // sped up in the compatibility mode only.
       episodeEnabled: source.episodeEnabled !== false,
+      // 阻止使用国际版: keeps the viewer on Bilibili's domestic site (bilibili-site.js). Off unless
+      // switched on.
+      blockInternational: source.blockInternational === true,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
@@ -104,26 +107,32 @@
         .map(normalizeCdnHost)
         .filter((host, index, all) => host && all.indexOf(host) === index)
         .slice(0, 32),
-      // The round button in the page corner that opens the settings panel, and where the
-      // viewer dragged it: which side, and how far down as a share of the window height.
+      // The round button in the page corner that opens the settings panel.
       floatingButton: source.floatingButton !== false,
       // Where the viewer dragged it, as shares of the window (0 = flush left, 1 = flush
       // right); null when it was never moved.
       floatingButtonLeft: source.floatingButtonLeft != null && Number(source.floatingButtonLeft) >= 0 && Number(source.floatingButtonLeft) <= 1 ? Number(source.floatingButtonLeft) : null,
       floatingButtonTop: source.floatingButtonTop != null && Number(source.floatingButtonTop) >= 0 && Number(source.floatingButtonTop) <= 1 ? Number(source.floatingButtonTop) : null,
+      // The first-run guide to the floating button was answered (settings-panel.js).
+      guideDone: source.guideDone === true,
       debugNotices: source.debugNotices === true,
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
       // 自动线程数: the downloader picks the thread count itself, between 8 and 64, and
-      // `concurrency` above is only what the viewer set by hand. Off unless asked for.
+      // `concurrency` above is only what the viewer set by hand. Off when the value is
+      // missing here; the userscript's stored settings (bridge.js) default it to on.
       autoConcurrency: source.autoConcurrency === true,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
       stallTimeoutMs: 4000,
       attemptTimeoutMs: 15000,
       hedgeDelayMs: 900,
-      bufferAheadSeconds: 45
+      // 全接管预缓冲时长: how far ahead the full takeover buffers, one of a few choices.
+      bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
+      // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
+      // Experimental, off unless switched on.
+      secondaryBuffer: source.secondaryBuffer === true
     };
   }
 

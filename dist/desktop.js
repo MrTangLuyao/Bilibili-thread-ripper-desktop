@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.30.1-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -99,6 +99,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
       // 剧集加速: episode pages (/bangumi/play/ep… and ss…: anime, films, documentaries, …),
       // sped up in the compatibility mode only.
       episodeEnabled: source.episodeEnabled !== false,
+      // 阻止使用国际版: keeps the viewer on Bilibili's domestic site (bilibili-site.js). Off unless
+      // switched on.
+      blockInternational: source.blockInternational === true,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
@@ -107,26 +110,32 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
         .map(normalizeCdnHost)
         .filter((host, index, all) => host && all.indexOf(host) === index)
         .slice(0, 32),
-      // The round button in the page corner that opens the settings panel, and where the
-      // viewer dragged it: which side, and how far down as a share of the window height.
+      // The round button in the page corner that opens the settings panel.
       floatingButton: source.floatingButton !== false,
       // Where the viewer dragged it, as shares of the window (0 = flush left, 1 = flush
       // right); null when it was never moved.
       floatingButtonLeft: source.floatingButtonLeft != null && Number(source.floatingButtonLeft) >= 0 && Number(source.floatingButtonLeft) <= 1 ? Number(source.floatingButtonLeft) : null,
       floatingButtonTop: source.floatingButtonTop != null && Number(source.floatingButtonTop) >= 0 && Number(source.floatingButtonTop) <= 1 ? Number(source.floatingButtonTop) : null,
+      // The first-run guide to the floating button was answered (settings-panel.js).
+      guideDone: source.guideDone === true,
       debugNotices: source.debugNotices === true,
       errorNotices: source.errorNotices === true,
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
       // 自动线程数: the downloader picks the thread count itself, between 8 and 64, and
-      // `concurrency` above is only what the viewer set by hand. Off unless asked for.
+      // `concurrency` above is only what the viewer set by hand. Off when the value is
+      // missing here; the userscript's stored settings (bridge.js) default it to on.
       autoConcurrency: source.autoConcurrency === true,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
       stallTimeoutMs: 4000,
       attemptTimeoutMs: 15000,
       hedgeDelayMs: 900,
-      bufferAheadSeconds: 45
+      // 全接管预缓冲时长: how far ahead the full takeover buffers, one of a few choices.
+      bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
+      // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
+      // Experimental, off unless switched on.
+      secondaryBuffer: source.secondaryBuffer === true
     };
   }
 
@@ -169,11 +178,6 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     "cn-hk-eq-01-03.bilivideo.com"
   ]);
 
-  const GLOBAL_HOSTS = Object.freeze([
-    ...OVERSEAS_HOSTS,
-    ...MAINLAND_HOSTS
-  ]);
-
   function isAkamaiUrl(value) {
     try { return new URL(value).hostname.toLowerCase().endsWith(".akamaized.net"); }
     catch (_error) { return false; }
@@ -207,7 +211,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     if (core.normalizeCdnHost(host) !== host) return null;
     try {
       const url = new URL(rawUrl);
-      // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
+      // Setting only the host name would keep a non-standard port, such as a peer CDN's
+      // :4483, so the port is cleared too.
       url.hostname = host;
       url.port = "";
       return url.href;
@@ -216,8 +221,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     }
   }
 
-  // The custom mode uses only the servers picked in the settings. Without any, it works like
-  // the mainland mode.
+  // The custom mode uses only the servers picked in the settings. Without any, it uses the
+  // mainland node list.
   function customServers(mode, customHosts) {
     return mode === "custom" && Array.isArray(customHosts) ? customHosts.map(core.normalizeCdnHost).filter(Boolean) : [];
   }
@@ -240,7 +245,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     // those signatures too, so only in that case the akamaized.net addresses are the donors.
     // Bilibili may hand out an address that every node refuses (HTTP 403) next to one that
     // works, so each of them is tried; the ban list drops the refused one. Node-major order
-    // keeps the first requests spread over several nodes.
+    // puts every address in the first few requests, so one that every node refuses cannot
+    // take all of them.
     const synthetic = (donor
       ? hosts.map((host) => swapOrdinaryHost(donor, host))
       : hosts.flatMap((host) => ordinary.map((url) => swapOrdinaryHost(url, host, true))))
@@ -387,8 +393,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
       return representationUrls(representation, getMode?.(), getCustomHosts?.() || []);
     }
 
-    // Banned nodes are left out. If every node is banned, keep using them rather
-    // than leaving the video with no download address at all.
+    // Banned nodes, addresses and node/address pairs are left out. If everything is banned,
+    // keep using the full list rather than leaving the video with no download address at all.
     function unbanned(list) {
       if (!bans) return list;
       const allowed = list.filter(bans.allows);
@@ -532,7 +538,6 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
   }
 
   root.__BILI_CDN_RESOLVER_FACTORY__ = Object.freeze({
-    GLOBAL_HOSTS,
     MAINLAND_HOSTS,
     OVERSEAS_HOSTS,
     createBanList,
@@ -554,6 +559,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
 
   const PIECE_ROUNDS = 3;
   const PIECE_RETRY_WINDOW_MS = 25000;
+  // The pause before a piece's next round of addresses: half a second, doubling, at most two.
+  const roundPause = (round) => Math.min(2000, 500 * (2 ** (round - 1)));
   // Below this a resumed request saves less than its own round trip costs.
   const RESUME_MIN_BYTES = 32 * 1024;
   // Hedging a piece with a playback deadline (see hedgeDue): a first copy projected to finish
@@ -664,7 +671,6 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
         signal?.addEventListener("abort", entry.cancel, { once: true });
         this.queue.push(entry);
         this.drain();
-        this.onChange?.(this.active, this.limit, this.queue.length);
       });
     }
   }
@@ -684,6 +690,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
   // ahead, the count steps back down to the level the page had before. A sign of not keeping
   // up meanwhile climbs as usual and ends the start there; so does half a minute without
   // catching up. From then on the rules above carry on.
+  //
+  // Stalls, the buffer and new starts come from the player (stall, buffer, newSession); a
+  // caller that reports none of them (the userscript's compatibility mode) gets only the
+  // slow-first-byte climb and the refusals.
   const AUTO_LADDER = Object.freeze([8, 12, 16, 24, 32, 48, 64]);
   const AUTO_STARTUP_LEVEL = 2;
   const AUTO_STARTUP_COMFORT_SECONDS = 15;
@@ -917,8 +927,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
     const getSettings = options.getSettings;
     const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
-    // The page replaces its settings object when something changes, so the reference
-    // tells whether the previous normalization is still valid.
+    // getSettings returns a new object whenever something changes (the userscript's page
+    // does), so the reference tells whether the previous normalization is still valid.
     let rawSettings = null;
     let normalizedSettings = null;
     let autoView = null;
@@ -978,13 +988,14 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     // - No data yet, or nothing new for a whole delay (stopped): copy.
     // - A deadline it meets with time to spare at its speed so far: no copy yet, the bandwidth
     //   goes to pieces needed sooner.
-    // - The copy's node known to be clearly faster: copy.
-    // - Slower than connections usually are: copy.
-    // - On pace: a copy on a node known to be no faster only takes the next piece's connection
-    //   and bandwidth; one on a node not measured yet is tried, as the chance of a faster one.
-    //   A piece that will miss its deadline even so may spend one of the range's rescue slots
-    //   on that node anyway: its measurement can be stale (a node that was slow a minute ago
-    //   may have recovered), and waiting for the request to time out costs far more.
+    // - The copy's node known to be clearly faster (HEDGE_FASTER times): copy.
+    // - Slower than connections usually are, or no usual speed measured yet: copy.
+    // - On pace: a copy on a node not known to be HEDGE_FASTER times faster only takes the
+    //   next piece's connection and bandwidth; one on a node not measured yet is tried, as
+    //   the chance of a faster one. A piece that will miss its deadline even so may spend one
+    //   of the range's rescue slots on that node anyway: its measurement can be stale (a node
+    //   that was slow a minute ago may have recovered), and waiting for the request to time
+    //   out costs far more.
     function hedgeDue(first, delayMs, deadlineAt, copyBps, rescue) {
       const now = performance.now(), ran = now - first.startedAt;
       const got = first.recorder.bytes;
@@ -1027,9 +1038,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     }
 
     // Only measured per-request progress can spend this bounded rescue budget. The second
-    // budget is for pieces that will miss their deadline while their copy's node is measured
-    // as no faster: that measurement can be stale, and a bounded number of such copies per
-    // range is far cheaper than waiting for a timeout.
+    // budget is for pieces that will miss their deadline while their copy's node is not
+    // measured as HEDGE_FASTER times faster: that measurement can be stale, and a bounded
+    // number of such copies per range is far cheaper than waiting for a timeout.
     function createEarlyHedge(limit) {
       return {
         progressRemaining: Math.max(0, limit),
@@ -1277,7 +1288,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
       for (let round = 0; round < PIECE_ROUNDS; round += 1) {
         if (round) {
           if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
-          await pause(Math.min(2000, 500 * (2 ** (round - 1))), signal);
+          await pause(roundPause(round), signal);
         }
         const candidates = pieceCandidates(piece, resolver, preferredUrls, round);
         const limit = Math.min(8, candidates.length);
@@ -1314,7 +1325,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
               ? deadlineDeficitSamples + 1
               : 0;
             // A clearly slow node is rescued immediately. If the whole route is slow,
-            // two consecutive deficit samples may spend the same one-per-range budget.
+            // two consecutive deficit samples may spend the same per-range rescue budget
+            // (createEarlyHedge).
             if (Number.isFinite(deadlineAt)
               && ((missesDeadline && slowerThanPeers) || deadlineDeficitSamples >= 2)) {
               firstBecameStraggler();
@@ -1338,7 +1350,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
               const copyBps = () => (typeof resolver.speed === "function" ? resolver.speed(url) || 0 : 0);
               // A playback-deadline request decides once its first copy has a connection (see
               // hedgeDue); one without a deadline (compatibility mode, the desktop client)
-              // keeps main's delay from the moment the piece asked, queue time included.
+              // keeps the fixed hedge delay (hedgeDelayMs), counted from the moment the piece
+              // asked, queue time included.
               const check = () => {
                 if (settled) return;
                 if (contexts[0] && hedgeDue(contexts[0], delay, deadlineNow(), copyBps(), earlyHedge)) return finish(resolve);
@@ -1532,6 +1545,29 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
       return primary ? [primary, ...urls.filter((url) => url !== primary)] : urls;
     }
 
+    // Hands the finished pieces to onOrderedChunk in order: each one as soon as every piece
+    // before it has been handed over. done() waits for what has been handed over so far.
+    function orderedDelivery(pieces, onOrderedChunk) {
+      const ordered = new Array(pieces.length);
+      let next = 0;
+      let operation = Promise.resolve();
+      return {
+        add(index, result) {
+          ordered[index] = result;
+          operation = operation.then(async () => {
+            while (ordered[next]) {
+              const item = ordered[next];
+              ordered[next] = null;
+              await onOrderedChunk(item.bytes, pieces[next], item.total);
+              next += 1;
+            }
+          });
+          return operation;
+        },
+        done: () => operation
+      };
+    }
+
     async function downloadStartupRange(range, resolver, options) {
       semaphore.setLimit(config().concurrency);
       const piece = { index: 0, start: range.start, end: range.end, length: range.length };
@@ -1542,7 +1578,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
       for (let round = 0; round < PIECE_ROUNDS; round += 1) {
         if (round) {
           if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
-          await pause(Math.min(2000, 500 * (2 ** (round - 1))), options.signal);
+          await pause(roundPause(round), options.signal);
         }
         let candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
           .filter((url, index, all) => all.indexOf(url) === index)
@@ -1612,23 +1648,11 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
         pieceBudget,
         adaptiveMinChunk(settings, range.end - head.end, pieceBudget, candidateUrls.length)
       ).map((piece, index) => ({ ...piece, index: index + 1 }));
-      const ordered = new Array(pieces.length);
-      let nextOrderedIndex = 0;
-      let flushOperation = Promise.resolve();
-      const flushOrdered = () => {
-        flushOperation = flushOperation.then(async () => {
-          while (ordered[nextOrderedIndex]) {
-            const item = ordered[nextOrderedIndex];
-            ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
-            nextOrderedIndex += 1;
-          }
-        });
-        return flushOperation;
-      };
+      const delivery = orderedDelivery(pieces, options.onOrderedChunk);
       // The probe measured at least its own winner, so the pieces spread over the nodes by
-      // speed at once; the proven address stays each piece's first fallback. Only addresses
-      // that have delivered carry the first segment: a node whose probe never finished would
+      // speed at once; the proven address is among each piece's fallbacks, which
+      // pieceCandidates orders by measured speed. Only the probe's winner and nodes with a
+      // speed measurement carry the first segment: a node whose probe never finished would
       // otherwise get a share of it and hold up the start. The others stay available for
       // rescue, and later ranges try them.
       const measured = typeof resolver.speed === "function" ? (url) => resolver.speed(url) > 0 : () => false;
@@ -1647,13 +1671,12 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
           options.deadline,
           earlyHedge
         );
-        ordered[orderedIndex] = result;
-        await flushOrdered();
+        await delivery.add(orderedIndex, result);
         return result;
       });
       options.onStartupScheduled?.();
       const results = await Promise.all(pendingPieces);
-      await flushOperation;
+      await delivery.done();
       const totals = [headResult, ...results].map((item) => item.total).filter(Number.isSafeInteger);
       if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
       return {
@@ -1703,20 +1726,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
       const primaries = parallel ? assignPrimaries(preferredUrls, resolver, pieces.length) : [];
       const earlyHedge = createEarlyHedge(rescueReserve);
       const progressive = typeof options.onOrderedChunk === "function";
-      const ordered = new Array(pieces.length);
-      let nextOrderedIndex = 0;
-      let flushOperation = Promise.resolve();
-      const flushOrdered = () => {
-        flushOperation = flushOperation.then(async () => {
-          while (ordered[nextOrderedIndex]) {
-            const item = ordered[nextOrderedIndex];
-            ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
-            nextOrderedIndex += 1;
-          }
-        });
-        return flushOperation;
-      };
+      const delivery = orderedDelivery(pieces, options.onOrderedChunk);
       const results = await Promise.all(pieces.map(async (piece) => {
         const result = await downloadPiece(
           piece,
@@ -1729,13 +1739,10 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
           deadline,
           earlyHedge
         );
-        if (progressive) {
-          ordered[piece.index] = result;
-          await flushOrdered();
-        }
+        if (progressive) await delivery.add(piece.index, result);
         return result;
       }));
-      if (progressive) await flushOperation;
+      if (progressive) await delivery.done();
       const totals = results.map((item) => item.total).filter(Number.isSafeInteger);
       if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
       return {
@@ -1962,8 +1969,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     const ordered = allCards();
     for (const card of ordered) card.height = card.wrapper.offsetHeight;
     const errors = ordered.filter(card => card.isError).reverse();
-    // Red messages occupy a protected lane at the top of the notification
-    // column. Ordinary traffic cannot evict them or push them offscreen.
+    // Red messages occupy a protected lane above the ordinary ones, starting at
+    // most 560px above the bottom of the column. Ordinary traffic cannot evict
+    // them or push them offscreen.
     let top = Math.max(2, stack.clientHeight - 560);
     for (const card of errors) {
       moveUp(card, Math.min(card.y, top));
@@ -1993,8 +2001,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     const height = `${Math.max(0, innerHeight - bottom - 14)}px`;
     if (host.style.height === height) return;
     host.style.setProperty("height", height, "important");
-    // A cleared error or taller viewport may offer more space below. Existing
-    // messages keep their positions; only newly created messages use that space.
+    // When the takeover error notice below closes, or the viewport grows, there
+    // is more space below. Existing messages keep their positions; only newly
+    // created messages use that space.
     trimErrors();
     packUpwards();
   }
@@ -2113,8 +2122,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     card.fade?.cancel();
     card.motion?.cancel();
     card.wrapper.remove();
-    // Absolute positions intentionally leave a gap. Removing a bubble must not
-    // pull older bubbles down to refill a bottom-aligned flex layout.
+    // A removed bubble leaves its gap on purpose: older bubbles never move down
+    // to fill it.
   }
 
   function retire(card) {
@@ -2225,7 +2234,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     // video servers and drops anything else.
     // 自动线程数 is on unless switched off, as in the browser version; concurrency is then only
     // the manual choice, used again when it is switched off.
-    return { enabled: s.enabled, autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
+    return { enabled: s.enabled, autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, theme: s.theme, floatingButton: s.floatingButton, floatingButtonLeft: s.floatingButtonLeft, floatingButtonTop: s.floatingButtonTop, guideDone: s.guideDone, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
   };
   let current;
   try {
@@ -2236,17 +2245,18 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
   } catch (_) { current = normalize({}); }
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
+  const store = next => {
+    localStorage.setItem(KEY, JSON.stringify(next)); // Failure must not pretend to save.
+    current = next; emit(); channel?.postMessage(current);
+    return api.getSettings();
+  };
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.19.1-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.30.1-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
-    setSettings(patch) {
-      const next = normalize({ ...current, ...patch });
-      localStorage.setItem(KEY, JSON.stringify(next)); // Failure must not pretend to save.
-      current = next; emit(); channel?.postMessage(current);
-      return api.getSettings();
-    },
+    setSettings(patch) { return store(normalize({ ...current, ...patch })); },
+    resetSettings() { return store(normalize({})); },
     onSettings(fn) { listeners.add(fn); fn(api.getSettings()); return () => listeners.delete(fn); },
     update: Object.freeze({ state: "idle", message: "从 GitHub 检查 BTR 更新" })
   };
@@ -2678,171 +2688,1375 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
 })(globalThis);
 
 
-/* src/settings-view.js */
+/* src/panel-bridge.js */
 (function (root) {
   "use strict";
-  const api = root.__BTR_DESKTOP__;
-  let panel, navButton, unsubscribe, unsubscribeUpdate, scheduled = false;
-  const style = document.createElement("style");
-  style.textContent = `
-    #btr-desktop-settings{padding:24px 0;border-bottom:1px solid var(--line_regular,#303133);color:var(--text1,#d8dce2);font:inherit}
-    #btr-desktop-settings h4{margin:0 0 20px;font-size:16px}#btr-desktop-settings .btr-version{margin-left:12px;color:var(--text3,#9499a0);font-size:12px;font-weight:400}
-    #btr-desktop-settings .btr-row{display:flex;align-items:center;gap:16px;margin:16px 0;flex-wrap:wrap}
-    #btr-desktop-settings .btr-label{min-width:132px;color:var(--text2,#b3bfca)}
-    #btr-desktop-settings button,#btr-desktop-settings select{border:1px solid var(--line_regular,#353638);border-radius:5px;background:var(--bg3,#252729);color:inherit;padding:7px 15px;font:inherit;cursor:pointer}
-    #btr-desktop-settings button[aria-pressed=true]{background:#bf4d7b;border-color:#bf4d7b;color:#fff}
-    #btr-desktop-settings #btr-desktop-uninstall{background:#b93843;border-color:#d14c57;color:#fff}
-    #btr-desktop-settings #btr-desktop-uninstall:hover:not(:disabled){background:#d04450}
-    #btr-desktop-settings button:disabled{opacity:.55;cursor:default}
-    #btr-desktop-settings .btr-inline{margin:0}#btr-desktop-settings .btr-threads-row.btr-auto{opacity:.45}#btr-desktop-settings .btr-threads-row.btr-auto input{cursor:default}
-    #btr-desktop-settings .btr-live-row label{color:var(--text3,#9499a0);cursor:not-allowed}#btr-desktop-settings .btr-live-row input{cursor:not-allowed}
-    #btr-desktop-settings input{accent-color:#d45b88}#btr-desktop-settings input[type=checkbox]{width:16px;height:16px;vertical-align:middle;margin:0 8px 0 0}
-    #btr-desktop-settings input[type=range]{width:min(290px,55vw)}#btr-desktop-settings output{min-width:35px;color:#ef77a3;font-weight:600}
-    #btr-desktop-settings .btr-debug-options{display:grid;grid-template-columns:repeat(2,minmax(145px,1fr));gap:12px;max-width:440px;padding:12px 0 6px}
-    #btr-desktop-settings .btr-custom{margin:0 0 8px 148px;max-width:520px}#btr-desktop-settings .btr-host-title{margin:14px 0 8px;color:var(--text2,#b3bfca);font-size:13px}
-    #btr-desktop-settings .btr-host-list{display:grid;grid-template-columns:repeat(2,minmax(230px,1fr));gap:9px 16px;font-size:12px}#btr-desktop-settings .btr-host-list label{overflow-wrap:anywhere;cursor:pointer}
-    #btr-desktop-settings .btr-host-add{display:flex;gap:8px;margin:8px 0}#btr-desktop-settings input[type=text]{flex:1;min-width:0;border:1px solid var(--line_regular,#353638);border-radius:5px;background:var(--bg3,#252729);color:inherit;padding:7px 10px;font:inherit;font-size:12px}
-    #btr-desktop-settings .btr-manual-host{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0;font-size:12px;overflow-wrap:anywhere}#btr-desktop-settings .btr-manual-host button{padding:2px 9px}
-    #btr-desktop-settings .btr-host-error{color:#f77979}#btr-desktop-settings .btr-host-error:empty{display:none}
-    #btr-desktop-settings [hidden]{display:none!important}#btr-desktop-settings .btr-note{font-size:12px;color:var(--text3,#9499a0);line-height:1.7;margin:8px 0}
-    #btr-desktop-settings .btr-save-error{color:#f77979} .settings_catalog.btr-current .settings_catalog--item:not(#btr-desktop-nav){color:var(--text2,#b3bfca)!important}.settings_catalog.btr-current .settings_catalog--item:not(#btr-desktop-nav):before{display:none!important}
-    #btr-desktop-nav{order:-1}.settings_catalog.btr-current #btr-desktop-nav{color:#ef77a3}.settings_catalog.btr-current #btr-desktop-nav:before{display:block!important}
-  `;
-  (document.head || document.documentElement).append(style);
-  function mount() {
-    scheduled = false;
-    const general = document.querySelector(".app_settings .settings_content--item.theme-item");
-    const catalog = document.querySelector(".app_settings .settings_catalog");
-    if (!general || !catalog) return;
-    if (!panel?.isConnected) {
-      unsubscribe?.(); unsubscribeUpdate?.();
-      panel = document.createElement("section"); panel.id = "btr-desktop-settings"; panel.className = "settings_content--item";
-      panel.innerHTML = `<h4>BTR 线程撕裂者<span class="btr-version">${api.version}</span></h4>
-        <div class="btr-row"><label><input type="checkbox" data-setting="enabled">启用多线程加速</label></div>
-        <div class="btr-row"><span class="btr-label">CDN 模式</span><button type="button" data-mode="mainland">大陆 CDN</button><button type="button" data-mode="overseas">海外 CDN</button><button type="button" data-mode="custom">自定义</button></div>
-        <div class="btr-custom" hidden>
-          <div class="btr-note btr-custom-empty">还没选服务器，暂时按大陆 CDN 下载。</div>
-          <div class="btr-host-groups"></div>
-          <div class="btr-host-title">手动添加</div>
-          <div class="btr-manual-hosts"></div>
-          <div class="btr-host-add"><input type="text" id="btr-desktop-host" placeholder="例如 upos-sz-mirrorali.bilivideo.com" spellcheck="false" autocomplete="off" aria-label="服务器地址"><button type="button" id="btr-desktop-host-add">添加</button></div>
-          <div class="btr-note btr-host-error" role="alert"></div>
-          <div class="btr-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</div>
-        </div>
-        <div class="btr-row"><label><input type="checkbox" data-setting="autoConcurrency">自动线程数</label><span class="btr-note btr-inline">BTR将智能选择需要的线程数。</span></div>
-        <div class="btr-row btr-threads-row"><label class="btr-label" for="btr-desktop-threads">并发线程</label><input id="btr-desktop-threads" type="range" min="0" max="5" step="1"><output></output></div>
-        <div class="btr-row btr-live-row"><label><input type="checkbox" id="btr-desktop-live" disabled>直播加速（敬请期待）</label><span class="btr-note btr-inline">直播加速已可在网页版中使用</span></div>
-        <div class="btr-row"><label><input type="checkbox" data-setting="errorNotices">显示错误</label><label><input type="checkbox" data-setting="debugNotices">Debug 模式</label></div>
-        <div class="btr-debug-wrap" hidden><div class="btr-row"><button type="button" data-select="all">全选</button><button type="button" data-select="none">全不选</button></div><div class="btr-debug-options"></div></div>
-        <div class="btr-row"><label><input type="checkbox" data-setting="autoCheckUpdates">自动检查 BTR 更新</label></div>
-        <div class="btr-row"><button type="button" id="btr-desktop-check-update">检查 BTR 更新</button><button type="button" id="btr-desktop-uninstall">卸载 BTR</button><button type="button" id="btr-desktop-install-update" hidden>安装更新</button></div>
-        <div class="btr-note btr-update-status" role="status"></div><div class="btr-note btr-save-error" role="status"></div>`;
-      for (const [key, title] of Object.entries(api.categories)) {
-        const label = document.createElement("label"), input = document.createElement("input");
-        input.type = "checkbox"; input.dataset.category = key; label.append(input, title); panel.querySelector(".btr-debug-options").append(label);
-      }
-      // The servers of the custom CDN mode: the known ones to tick, others typed in.
-      const core = root.__BILI_RANGE_CORE__, cdn = root.__BILI_CDN_RESOLVER_FACTORY__, maxHosts = 32;
-      const hostGroups = [["大陆节点", cdn.MAINLAND_HOSTS], ["海外节点", cdn.OVERSEAS_HOSTS]];
-      const knownHosts = hostGroups.flatMap(([, hosts]) => hosts);
-      for (const [title, hosts] of hostGroups) {
-        const heading = document.createElement("div"); heading.className = "btr-host-title"; heading.textContent = title;
-        const list = document.createElement("div"); list.className = "btr-host-list";
-        for (const host of hosts) {
-          const label = document.createElement("label"), input = document.createElement("input");
-          input.type = "checkbox"; input.dataset.host = host; label.append(input, host); list.append(label);
-        }
-        panel.querySelector(".btr-host-groups").append(heading, list);
-      }
-      const hostError = panel.querySelector(".btr-host-error"), hostInput = panel.querySelector("#btr-desktop-host");
-      general.before(panel);
-      const threadOptions = [4, 8, 16, 32, 64, 128];
-      const save = patch => {
-        try { api.setSettings(patch); panel.querySelector(".btr-save-error").textContent = ""; }
-        catch (_) { panel.querySelector(".btr-save-error").textContent = "设置保存失败，请检查客户端的数据目录是否可写。"; }
-      };
-      const addHost = () => {
-        const host = core.normalizeCdnHost(hostInput.value), hosts = api.getSettings().customHosts;
-        if (!host) hostError.textContent = "这不是 B 站的视频服务器地址。";
-        else if (hosts.includes(host)) hostError.textContent = "这个服务器已经在列表里了。";
-        else if (hosts.length >= maxHosts) hostError.textContent = `最多选 ${maxHosts} 个服务器。`;
-        else { hostError.textContent = ""; hostInput.value = ""; save({ customHosts: [...hosts, host] }); }
-      };
-      hostInput.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); addHost(); } });
-      panel.addEventListener("change", event => {
-        const input = event.target;
-        if (input.dataset.host) {
-          const hosts = api.getSettings().customHosts.filter(host => host !== input.dataset.host);
-          if (input.checked && hosts.length >= maxHosts) { input.checked = false; hostError.textContent = `最多选 ${maxHosts} 个服务器。`; return; }
-          hostError.textContent = ""; save({ customHosts: input.checked ? [...hosts, input.dataset.host] : hosts });
-        }
-        if (input.dataset.setting) save({ [input.dataset.setting]: input.checked });
-        if (input.dataset.category) save({ debugCategories: Object.fromEntries([...panel.querySelectorAll("[data-category]")].map(x => [x.dataset.category, x.checked])) });
-        if (input.id === "btr-desktop-threads") save({ concurrency: threadOptions[Number(input.value)] });
-      });
-      panel.querySelector("input[type=range]").addEventListener("input", event => { panel.querySelector("output").textContent = String(threadOptions[Number(event.target.value)]); });
-      panel.addEventListener("click", event => {
-        const button = event.target.closest("button"); if (!button) return;
-        if (button.id === "btr-desktop-check-update") api.checkUpdate();
-        if (button.id === "btr-desktop-host-add") addHost();
-        if (button.dataset.removeHost) save({ customHosts: api.getSettings().customHosts.filter(host => host !== button.dataset.removeHost) });
-        if (button.dataset.mode) save({ mode: button.dataset.mode });
-        if (button.dataset.select) save({ debugCategories: Object.fromEntries(Object.keys(api.categories).map(key => [key, button.dataset.select === "all"])) });
-      });
-      unsubscribe = api.onSettings(settings => {
-        panel.querySelectorAll("[data-setting]").forEach(x => { x.checked = settings[x.dataset.setting]; });
-        panel.querySelectorAll("[data-category]").forEach(x => { x.checked = settings.debugCategories[x.dataset.category] !== false; });
-        panel.querySelectorAll("[data-mode]").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.mode === settings.mode)));
-        panel.querySelector(".btr-custom").hidden = settings.mode !== "custom";
-        panel.querySelector(".btr-custom-empty").hidden = settings.customHosts.length > 0;
-        panel.querySelectorAll("[data-host]").forEach(x => { x.checked = settings.customHosts.includes(x.dataset.host); });
-        panel.querySelector(".btr-manual-hosts").replaceChildren(...settings.customHosts.filter(host => !knownHosts.includes(host)).map(host => {
-          const row = document.createElement("div"), text = document.createElement("span"), remove = document.createElement("button");
-          row.className = "btr-manual-host"; text.textContent = host;
-          remove.type = "button"; remove.dataset.removeHost = host; remove.textContent = "删除"; remove.setAttribute("aria-label", `删除 ${host}`);
-          row.append(text, remove); return row;
-        }));
-        panel.querySelector("input[type=range]").value = String(Math.max(0, threadOptions.indexOf(settings.concurrency)));
-        panel.querySelector("output").textContent = String(settings.concurrency);
-        // With 自动线程数 on the slider is the manual choice kept for later, not in use.
-        panel.querySelector("input[type=range]").disabled = settings.autoConcurrency;
-        panel.querySelector(".btr-threads-row").classList.toggle("btr-auto", settings.autoConcurrency);
-        panel.querySelector(".btr-debug-wrap").hidden = !settings.debugNotices;
-      });
-      unsubscribeUpdate = api.onUpdate(update => {
-        panel.querySelector(".btr-update-status").textContent = update.message;
-        const busy = ["confirming","installing","uninstalling"].includes(update.state);
-        panel.querySelector("#btr-desktop-check-update").disabled = busy || update.state === "checking";
-        panel.querySelector("#btr-desktop-uninstall").disabled = busy;
-        const install = panel.querySelector("#btr-desktop-install-update");
-        install.hidden = update.state !== "available";
-        install.textContent = update.manifest ? `更新到 ${update.manifest.version}` : "安装更新";
-      });
-    }
-    if (!navButton?.isConnected) {
-      navButton = document.createElement("button"); navButton.type = "button"; navButton.id = "btr-desktop-nav";
-      navButton.className = "settings_catalog--item text_ellipsis"; navButton.textContent = "线程撕裂者";
-      catalog.prepend(navButton);
-      navButton.addEventListener("click", () => {
-        const scroller = document.querySelector(".app_settings .settings_content");
-        if (!scroller || !panel) return;
-        scroller.scrollTo({ top: scroller.scrollTop + panel.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 20, behavior: "smooth" });
-        catalog.classList.add("btr-current"); navButton.classList.add("active");
-      });
-      catalog.addEventListener("click", event => { if (!navButton.contains(event.target)) { catalog.classList.remove("btr-current"); navButton.classList.remove("active"); } });
-      const scroller = document.querySelector(".app_settings .settings_content");
-      const updateSelection = () => {
-        const top = panel.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-        const selected = scroller.scrollTop < 1 || (top <= 24 && top + panel.offsetHeight > 24);
-        catalog.classList.toggle("btr-current", selected); navButton.classList.toggle("active", selected);
-      };
-      scroller?.addEventListener("scroll", updateSelection, { passive: true });
-      if (scroller) updateSelection();
-    }
+  // The settings panel and the floating button are the browser version's own code
+  // (shared/settings-panel.js), so there is one panel to maintain. This file is what stands
+  // in for its bridge.js: it answers the panel's messages from the desktop settings, leaves
+  // out what the client has no use for and adds the block for updates and uninstalling.
+  const api = root.__BTR_DESKTOP__, transport = () => api.transport;
+  const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
+  const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
+  let saveError = () => {};
+
+  function saved(write) {
+    try { write(); saveError(""); }
+    catch (_) { saveError("设置保存失败，请检查客户端的数据目录是否可写。"); }
   }
-  const observer = new MutationObserver(() => { if (!scheduled) { scheduled = true; requestAnimationFrame(mount); } });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-  mount();
+
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (_) {}
+    const area = document.createElement("textarea");
+    area.value = text; area.style.cssText = "position:fixed;opacity:0";
+    (document.querySelector("dialog") || document.body).append(area);
+    area.select();
+    try { return document.execCommand("copy"); } catch (_) { return false; } finally { area.remove(); }
+  }
+
+  function mount(panel) {
+    const block = document.createElement("div");
+    block.className = "block btr-update";
+    block.innerHTML = `<h2 class="block-title">更新</h2>
+      <section class="notice-controls" aria-label="更新">
+        <label class="notice-row" for="btr-desktop-auto-update"><span class="row-text">自动检查 BTR 更新</span><span class="switch"><input id="btr-desktop-auto-update" type="checkbox" aria-label="自动检查 BTR 更新"><span></span></span></label>
+        <div class="btr-maintenance">
+          <button id="btr-desktop-install-update" type="button" hidden>安装更新</button>
+          <button id="btr-desktop-check-update" type="button">检查 BTR 更新</button>
+          <button id="btr-desktop-uninstall" type="button">卸载 BTR</button>
+        </div>
+        <p class="btr-update-status" role="status"></p>
+        <p class="btr-save-error" role="status"></p>
+      </section>`;
+    // On the panel's first page, not under 高级设置: this is how the app is kept up to date.
+    panel.querySelector(".view-main").append(block);
+    const find = selector => block.querySelector(selector);
+    find("#btr-desktop-auto-update").addEventListener("change", event => saved(() => api.setSettings({ autoCheckUpdates: event.target.checked })));
+    // Installing and uninstalling are started by the preload, which only trusts real clicks.
+    find("#btr-desktop-check-update").addEventListener("click", () => api.checkUpdate());
+    saveError = message => { find(".btr-save-error").textContent = message; };
+    // The client cannot open links in a browser: the GitHub button copies the address instead.
+    const link = panel.querySelector("#github-link");
+    link.title = link.ariaLabel = "复制项目地址";
+    link.removeAttribute("target");
+    link.addEventListener("click", async event => {
+      event.preventDefault();
+      find(".btr-update-status").textContent = await copy(link.href) ? "已复制项目地址" : "复制失败，地址是 " + link.href;
+    });
+    // The panel is rebuilt on every open; a closed one stops listening. It joins the page
+    // only after this runs, so "gone" means it was connected once.
+    const whileOpen = (subscribe, show) => {
+      let shown = false, stop = null;
+      stop = subscribe(value => {
+        if (block.isConnected) shown = true;
+        else if (shown) { stop?.(); return; }
+        show(value);
+      });
+    };
+    whileOpen(api.onSettings, settings => { find("#btr-desktop-auto-update").checked = settings.autoCheckUpdates !== false; });
+    whileOpen(api.onUpdate, update => {
+      find(".btr-update-status").textContent = update.message;
+      const busy = ["confirming", "installing", "uninstalling"].includes(update.state);
+      find("#btr-desktop-check-update").disabled = busy || update.state === "checking";
+      find("#btr-desktop-uninstall").disabled = busy;
+      const install = find("#btr-desktop-install-update");
+      install.hidden = update.state !== "available";
+      install.textContent = update.manifest ? `更新到 ${update.manifest.version}` : "安装更新";
+    });
+  }
+
+  root.__BTR_PANEL_HOST__ = Object.freeze({
+    projectUrl: "https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop",
+    // 接管方式, 缓冲, 加速范围 and 网页版本 are the browser version's: the client plays by itself.
+    hide: [".takeover-select", ".accel-controls", ".site-controls", "#tab-buffer", "#panel-buffer"],
+    css: `
+      .tabs { grid-template-columns: repeat(3, 1fr); }
+      .btr-maintenance { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; margin: 6px 0 8px; padding: 3px; border-radius: 10px; background: var(--bg); }
+      .btr-maintenance button { padding: 7px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+      .btr-maintenance button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+      .btr-maintenance button:disabled { opacity: .55; cursor: default; }
+      .btr-maintenance button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+      #btr-desktop-install-update { grid-column: 1 / -1; background: #fb7299; color: #fff; font-weight: 600; }
+      #btr-desktop-install-update[hidden] { display: none; }
+      #btr-desktop-install-update:hover:not(:disabled) { background: #fb7299; color: #fff; }
+      #btr-desktop-uninstall:hover:not(:disabled) { color: var(--error); }
+      .btr-update-status, .btr-save-error { margin: 0 0 8px 2px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+      .btr-save-error { color: var(--error); }
+      .btr-update-status:empty, .btr-save-error:empty { display: none; }
+    `,
+    mount
+  });
+
+  // The transport counts bytes; the panel shows a speed.
+  let lastBytes = 0, lastAt = 0, speed = 0;
+  function stats() {
+    const snapshot = transport()?.snapshot() || {}, now = performance.now(), bytes = Number(snapshot.networkBytes) || 0;
+    if (lastAt && now > lastAt) speed = Math.max(0, bytes - lastBytes) * 1000 / (now - lastAt);
+    lastBytes = bytes; lastAt = now;
+    return { activeThreads: Number(snapshot.activeThreads) || 0, totalSpeedBps: speed };
+  }
+
+  api.onSettings(settings => post("settings", settings));
+  root.addEventListener("message", event => {
+    if (event.source !== root || event.data?.channel !== CHANNEL) return;
+    if (event.data.type === "get-settings") post("settings", api.getSettings());
+    else if (event.data.type === "get-stats") post("stats", stats());
+    else if (event.data.type === "settings-update") saved(() => api.setSettings(event.data.payload));
+    else if (event.data.type === "settings-reset") saved(api.resetSettings);
+  });
+  // The panel's diagnostic copy.
+  root.__biliThreadRipperDebug = { report: () => JSON.stringify(api.getStatus?.() || {}) };
+})(globalThis);
+
+
+/* shared/settings-panel.js */
+// The settings panel. It runs in the bilibili page and opens from the button in the page's
+// corner, the userscript manager's menu, or "自定义" in the player's gear menu. Settings are
+// read and saved through bridge.js; storage-shim.js keeps them in the script manager's
+// storage.
+(function installSettingsPanel(root) {
+  "use strict";
+
+  if (root.__BTR_SETTINGS_PANEL__) return;
+  const core = root.__BILI_RANGE_CORE__;
+  const cdn = root.__BILI_CDN_RESOLVER_FACTORY__;
+  if (!core || !cdn) return;
+  // The desktop app opens this same panel. It names what the client has no use for and adds
+  // its own block (its src/panel-bridge.js); the userscript sets none of this.
+  const hostApp = root.__BTR_PANEL_HOST__;
+
+  const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
+  // Which script this is: the released one, or the Canary built from main.
+  const SCRIPT_CHANNEL = "stable" === "canary" ? "canary" : "stable";
+  const CHANNEL_NAMES = { stable: "正式版", canary: "Canary" };
+  // Set by the other of the two scripts when both are switched on (see loader.js).
+  const otherScript = () => document.documentElement?.getAttribute("data-btr-also-running") || "";
+  const HOST_ID = "__bilibili_thread_ripper_settings__";
+  const DIALOG_ID = "__bilibili_thread_ripper_settings_dialog__";
+  const LAUNCHER_ID = "__bilibili_thread_ripper_launcher__";
+  const GUIDE_ID = "__bilibili_thread_ripper_guide__";
+  const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128];
+  const BUFFER_OPTIONS = [30, 45, 90, 180];
+  const MAX_CUSTOM_HOSTS = 32;
+  const HOST_GROUPS = [["大陆节点", cdn.MAINLAND_HOSTS], ["海外节点", cdn.OVERSEAS_HOSTS]];
+  const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
+  // GitHub's mark.
+  const GITHUB_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>`;
+  // The script's own icon, icons/icon-128.png (dev/userscript-test.js checks the two stay the same).
+  const ICON_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAACXBIWXMAAAsTAAALEwEAmpwYAAAHzklEQVR4nO2d248VNRjA58HLuySi0UcV/xoDMZHoEw8Gjcil3WVFjUIUb1FcNhC23x7kohFwTbyh4opGAVHuKBBhXcALBCTrgnAWzp6208909pAYg7LrtNPOnO+XfG9sOPN9v2k7baeTJARBEARBEARBEARBEAThEuxceZtm8JDi0CM5DCguhiSD85KDVBywHUNykDYHWS6ynECP5r0P2lxVwj6cs2KKZDBPcdgbOtmlCyb2SC7m2hwmZQO7+u5UTCyXHC4HT2TJQzIxqjh0I+u9I4kdnA03Sg7zJYd66MRVLaS9mRgswbk9NycxMjZ/1TTF4fvQiap+iINjvO+eJCYUg/vprofiWgMmLinWNyOJgSbvmyUZqPB3RnuF5ELLBeLRoMWXDB4JnYh2D8nF3IDNvtChE9DuIcdrML3Q4jdY7S7J4WLoi6eAlgRQH+NwbyHFx8X9N9FoH+KTj8EB+xjuXQDJYVHwi6XAa3cH0Om1+HY2qjUzRUXgcXYFuABu9yaAnd4NfZEUcL2uYJm/hR2a28fYBbQttJcFpNaqXvALpIAJdAVijnMBaEkXyiTfbqfFtwMLyYWJ4MIo+IRaAIPzalOdCdDayUPJ5+XJgeZipjMB7Fal0BdEAZPNQbczAVr71agIvDw5kEx86kwAxeFE6AuigEnmQAw5E0ByMUIFgFJJKBkMuxOAiWboC6KAyQnAYcyZAJR8KKWAJEAERVAkQPhEtGskVesCCqfRRLwyhubcBTQnzqI5MITpZ/tQv7kV9dINwfNBAoTmz1E0ewdRrxlA9cQbwQtOLUBIGk1Mtx9G/dKm4IW/GtQFhCA1mO4ZRPX82yRA6ccAeWgqTD/ejaqjj1qAthSghfnxV1RPraUuoF0FsJhTw6ieXkdjgHYVwGJ+PYdqUbFPCjQIjAxz4DgJ0K4twFX0W19QC9DOAuCfo4V1BeG6gIU1TLfsRXNmBPF8fUJh/639G/u3lRYAEdP3dlZbgPSzvRMu/D/D/q0vAa7727tWo3pmPeqX30G9biumXxxE8/sFdI1dW1AdFRZgMnf+tVqCYALwa4de/n62GOQS/eq7JEBZBFA2OgDTT3YjGif1H58lrGoLUNougE/g2gb2ORHAfH+iugLEOgh0ktiFNTRnR/ILcPZ8hQXwFFEIwAHT93fm/i1Yb5AAZRVAv9KfXwClSYCyCqCeXJNfgKYiAUorwFNr3cwIeu4yaQwQcRdgTg+TAGVtAdIPvs39W9JdR0mAUgqw0M1jYNq/jQQoowCpi4kgY1A993aFxgD/Y+KndBNBHe6mgs3gae/FL1SAPFO/ZZgK1j1uF4P0us+rJUCeOz+qxaCu1aieXY/6FX/LwdnewAKWgkmAGDEG9YoPCyk+dQERkn6+v7DiFypAWQaBITHHTqHqrFVUgIKirJiTZ7P1g6LzRQJEgDl0MkjxSYDQ6BTTzbsKG/GTABFhBk9nC0ahu0zqAkIJcGoY9YavUHWGezWcBIgAc+4CaviEBHBldFkxdgfwM+upBWhXASxm5FLh5weFGwNEui08OPUrqLvfq74Asb4YEgVXxlC/uKnaAsT6bmAsGPtyaAHnBpEAEWP2/VRdAagLmAAGUa/8sJoCxDoInPDv71qNaslb2WyeXr8V022HnGwEvebpYR1VFMBT5CXv/69XfpQt67pEr9pMApRFAHV1c+i727N3+1xg9g+RAKUSgLdag3Vbsy1e+X+U9vZEQF2ARwGUHex+edBNN+BpvYAE8CyAsi+J1hu5BbAvm5AAJesC1NVWYMeR3L/LHP2NBCirALq2Jb8A/zH7SV1A7AIs3RDtWQE0BihAALXojWiPiyEBihDgSQfHxZAAE0t2lF3ACxvzCzDq58QwagHKMgj84yIJUNYWIP3mSLTnBVALUJaJoB1H4hYgls/H5yXWqeB009dxfz5ecjESuvixCaDXDGQfiXSBj49MSgbDzgRQDI6HLn5ll4PP+JkFVFwMORNAchgIXfyqbghJP/jWS64kE586E0Bx6GkrAbqK2RKGUvn8oGS3MwE0732wCgLERvrlQW+50gv6HnAmAM6rTZVcGBLAIfUr3nYC2VrZmiUuUUzsIQHcYZ8i/OVTfJe4RnIxlwRwQ7rjsNeuUjJ4zLkAOGfFFMnEKI0B8mGO/PKf7z7kL74YtbVKfGBHliRAzq1f9gnD492vOLyW+AJZ7x0hW4Eyk9rvA3i881t3/yXsXHlb4hPJxBMkwCRoNDHd+FUhN4hk0JH4BmfDjYrBAWoBroNBND+cLOS7AK3Yb2uTFEGD1e6SHC5SF/AvhR88lR0xX1R+JIf62PxV05IiUaxvhuRCFylB1NQb2bq+PWq+yJy0anBfEgLZIWa3rQCpyV7vtusE2Ru+Ac4EtDN+TQ4PJyFp8r5ZkoGqnACNZnaejz3dy/z8O5rDP2fFTvu3jx/sEOj837/f+ZLBI0kMKA7T7SNIyIS0U8jx8VeYZv/fGFvYe3eop4M2i/12EJ7ECC5efIPkMJ9aA/Bx119WDJbg4v6bktjBBXC7YuL10GsHVQhpc8hgmfcZPh+MLyDB44rBrhj2E5QlZJYr8Z3kYg6y2i1JFcCOVbdqLmbaBSXJYYvicMzuNo5ly7kKUWgmmq0d18daOem2ObK5Cl0vgiAIgiAIgiAIgiAIomL8Bc0CR4+jT4wjAAAAAElFTkSuQmCC";
+  // The theme button shows the choice in use: a sun for 浅色, a moon for 深色, and for 自动 a
+  // half sun, half moon with a small A in the corner.
+  const THEME_ICONS = `<svg class="icon-light" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"></path></svg>`
+    + `<svg class="icon-dark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.5 13.8A8.5 8.5 0 1 1 10.2 3.5a6.6 6.6 0 0 0 10.3 10.3z"></path></svg>`
+    + `<svg class="icon-auto" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="4"></circle><path d="M10 6a4 4 0 0 1 0 8z" fill="currentColor" stroke="none"></path><path d="M10 1.7v1.8M10 16.5v1.8M1.7 10h1.8M16.5 10h1.8M4.1 4.1l1.3 1.3M15.9 4.1l-1.3 1.3M4.1 15.9l1.3-1.3"></path><path d="M14.6 22.8l4.1-9 4.1 9M16 19.6h5.4"></path></svg>`;
+  const THEME_LABELS = { auto: "自动（跟随系统）", light: "浅色", dark: "深色" };
+  const CHEVRON_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>`;
+  const KNOWN_HOSTS = HOST_GROUPS.flatMap(([, hosts]) => hosts);
+
+  // The ripple on everything that can be pressed, the same one as on louie1.com: a circle that
+  // grows from where the press landed and fades out. A timer removes each circle after its run,
+  // not only animationend: an animation does not run while its element is hidden (a page or
+  // tab of the panel not shown, the floating button taken off the page while the panel is
+  // open), so animationend would never come, and the leftover circle would play again as
+  // soon as the element showed up.
+  const RIPPLE_MS = 600;
+  const RIPPLE_CSS = `
+    .btr-ripple-host { overflow: hidden; }
+    .btr-ripple { position: absolute; display: block; border-radius: 50%; transform: scale(0); background: var(--ripple, rgba(255, 255, 255, .15)); pointer-events: none; animation: btr-ripple ${RIPPLE_MS}ms linear forwards; }
+    @keyframes btr-ripple { to { transform: scale(4); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .btr-ripple { display: none; } }
+  `;
+
+  function ripple(surface, event) {
+    if (!surface) return;
+    if (root.getComputedStyle(surface).position === "static") surface.style.position = "relative";
+    surface.classList.add("btr-ripple-host");
+    clearRipples(surface);
+    const box = surface.getBoundingClientRect();
+    const size = Math.max(surface.clientWidth, surface.clientHeight);
+    // Its own element rather than a span, which the panel's span rules (the switches, the
+    // choices) would restyle.
+    const circle = document.createElement("btr-ripple");
+    circle.className = "btr-ripple";
+    circle.style.width = circle.style.height = `${size}px`;
+    circle.style.left = `${event.clientX - box.left - size / 2}px`;
+    circle.style.top = `${event.clientY - box.top - size / 2}px`;
+    surface.append(circle);
+    const timer = setTimeout(() => circle.remove(), RIPPLE_MS + 50);
+    circle.addEventListener("animationend", () => {
+      clearTimeout(timer);
+      circle.remove();
+    }, { once: true });
+  }
+
+  function clearRipples(scope) {
+    for (const circle of scope?.querySelectorAll(".btr-ripple") || []) circle.remove();
+  }
+
+  // 运行状态's speed: KB/s, MB/s from one megabyte a second up.
+  function formatSpeed(bps) {
+    const value = Math.max(0, Number(bps) || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
+    return `${Math.round(value / 1024)} KB/s`;
+  }
+
+  const PANEL_HTML = `
+    <main>
+      <header>
+        <img class="logo" src="${ICON_URI}" alt="" width="42" height="42">
+        <div class="title">
+          <div class="name">
+            <h1>线程撕裂者</h1>
+            <span class="version">v2026.10.30.1-d1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+          </div>
+          <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
+          <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
+        </div>
+        <label class="switch" title="启用或停用">
+          <input id="enabled" type="checkbox">
+          <span></span>
+        </label>
+      </header>
+      <p id="also-running" class="also-running" role="alert" hidden></p>
+      <p id="disabled-note" class="disabled-note" role="status" hidden>线程撕裂者已关闭，打开右上角的开关即可启用。</p>
+
+      <div class="view-main">
+        <div class="block" data-needs-enabled>
+          <h2 class="block-title">接管方式</h2>
+          <section class="takeover-select" aria-label="接管方式">
+            <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
+            <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
+          </section>
+          <p class="takeover-note">Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
+        </div>
+        <div class="block" data-needs-enabled>
+          <h2 class="block-title">运行状态</h2>
+          <section class="run-state" aria-label="运行状态">
+            <span><b id="active-count">0</b> 条线程</span>
+            <b class="run-speed">0 KB/s</b>
+          </section>
+        </div>
+      </div>
+
+      <details id="advanced" class="advanced">
+        <summary>
+          <span class="advanced-title">高级设置${CHEVRON_ICON}</span>
+          <small>默认设置在绝大多数场景就是表现最优的。如果你遇到了问题，修改这里的一些设置可能有帮助。</small>
+        </summary>
+        <div class="advanced-page">
+          <div class="page-bar">
+            <button id="advanced-back" class="page-back" type="button" aria-label="返回">${CHEVRON_ICON}</button>
+            <span class="page-title">高级设置</span>
+          </div>
+          <div class="tabs" role="tablist" aria-label="高级设置">
+            <button id="tab-network" type="button" role="tab" data-tab="network" aria-controls="panel-network" aria-selected="true">网络</button>
+            <button id="tab-buffer" type="button" role="tab" data-tab="buffer" aria-controls="panel-buffer" aria-selected="false" tabindex="-1">缓冲</button>
+            <button id="tab-features" type="button" role="tab" data-tab="features" aria-controls="panel-features" aria-selected="false" tabindex="-1">功能</button>
+            <button id="tab-interface" type="button" role="tab" data-tab="interface" aria-controls="panel-interface" aria-selected="false" tabindex="-1">界面</button>
+          </div>
+          <div id="panel-network" class="tab-panel" role="tabpanel" aria-labelledby="tab-network" data-tab-panel="network">
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">CDN 模式</h2>
+              <section class="mode-select" aria-label="CDN 模式">
+                <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
+                <label><input type="radio" name="mode" value="overseas"><span>海外</span></label>
+                <label><input type="radio" name="mode" value="custom"><span>自定义</span></label>
+              </section>
+              <section id="custom-hosts" class="custom-hosts" aria-label="自定义服务器" hidden>
+                <div class="custom-head"><span>自定义服务器</span><b id="custom-count">0</b></div>
+                <p id="custom-empty" class="custom-note">还没选服务器，暂时按大陆 CDN 下载。</p>
+                <div id="known-hosts"></div>
+                <fieldset class="host-group">
+                  <legend>手动添加</legend>
+                  <div id="manual-hosts" class="manual-hosts"></div>
+                  <form id="host-form" class="host-form">
+                    <input id="host-input" type="text" placeholder="例如 upos-sz-mirrorali.bilivideo.com" spellcheck="false" autocomplete="off" aria-label="服务器地址">
+                    <button type="submit">添加</button>
+                  </form>
+                  <p id="host-error" class="host-error" role="alert"></p>
+                </fieldset>
+                <p class="custom-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</p>
+              </section>
+            </div>
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">线程</h2>
+              <section class="controls">
+                <div class="control-title">
+                  <label for="concurrency">线程加载数</label>
+                  <output id="thread-value" for="concurrency">8</output>
+                </div>
+                <label class="auto-row" for="auto-concurrency"><span class="row-text">自动线程数（推荐）<small>BTR将智能选择需要的线程数。</small></span><span class="switch"><input id="auto-concurrency" type="checkbox" aria-label="自动线程数"><span></span></span></label>
+                <div class="slider">
+                  <div id="slider-fill" class="slider-fill" aria-hidden="true"></div>
+                  <input id="concurrency" type="range" min="0" max="5" step="1" value="1" aria-label="线程加载数" aria-valuetext="8">
+                </div>
+                <div class="scale" aria-hidden="true">
+                  <span>4</span><span>8</span><span>16</span><span>32</span><span>64</span><span>128</span>
+                </div>
+              </section>
+            </div>
+          </div>
+          <div id="panel-buffer" class="tab-panel" role="tabpanel" aria-labelledby="tab-buffer" data-tab-panel="buffer" hidden>
+            <div class="block" data-needs-enabled>
+              <section class="controls buffer-controls" aria-label="缓冲">
+                <div class="control-title">
+                  <label for="buffer-ahead" class="row-text">全接管预缓冲时长<small>可能受到浏览器150MiB限制</small></label>
+                  <output id="buffer-value" for="buffer-ahead">45s</output>
+                </div>
+                <div class="slider">
+                  <div id="buffer-fill" class="slider-fill" aria-hidden="true"></div>
+                  <input id="buffer-ahead" type="range" min="0" max="3" step="1" value="1" aria-label="全接管预缓冲时长" aria-valuetext="45 秒">
+                </div>
+                <div class="scale" aria-hidden="true">
+                  <span>30s</span><span>45s</span><span>90s</span><span>180s</span>
+                </div>
+                <label class="auto-row" for="secondary-buffer"><span class="row-text">开启二级缓冲（实验性）<small>尝试绕过浏览器视频缓冲容量限制</small></span><span class="switch"><input id="secondary-buffer" type="checkbox" aria-label="开启二级缓冲（实验性）"><span></span></span></label>
+              </section>
+            </div>
+          </div>
+          <div id="panel-features" class="tab-panel" role="tabpanel" aria-labelledby="tab-features" data-tab-panel="features" hidden>
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">加速范围</h2>
+              <section class="accel-controls" aria-label="加速范围">
+                <label class="accel-row" for="episode-enabled"><span class="row-text">剧集加速<small>加速番剧、电影、纪录片等剧集，使用兼容模式。</small></span><span class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></span></label>
+                <label class="accel-row" for="live-enabled"><span class="row-text">直播加速（实验性）</span><span class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></span></label>
+              </section>
+            </div>
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">网页版本</h2>
+              <section class="site-controls" aria-label="网页版本">
+                <label class="accel-row" for="block-international"><span class="row-text">阻止使用国际版<small>重定向B站到国内版网页</small></span><span class="switch"><input id="block-international" type="checkbox" aria-label="阻止使用国际版"><span></span></span></label>
+              </section>
+            </div>
+            <div class="block">
+              <h2 class="block-title">调试</h2>
+              <section class="notice-controls" aria-label="调试">
+                <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
+                <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
+                <fieldset id="debug-filters" class="debug-filters" hidden>
+                  <legend>显示哪些 Debug 消息</legend>
+                  <div class="debug-filter-actions"><button id="debug-select-all" type="button">全选</button><button id="debug-select-none" type="button">全不选</button></div>
+                  <div class="debug-filter-options">
+                    <label><input type="checkbox" data-debug-category="takeover">接管与切换</label>
+                    <label><input type="checkbox" data-debug-category="playback">播放与暂停</label>
+                    <label><input type="checkbox" data-debug-category="download">下载线程</label>
+                    <label><input type="checkbox" data-debug-category="buffer">缓冲与跳转</label>
+                    <label><input type="checkbox" data-debug-category="settings">设置变化</label>
+                    <label><input type="checkbox" data-debug-category="other">其他日志</label>
+                  </div>
+                  <div class="debug-copy">
+                    <button id="debug-copy" type="button">复制诊断信息</button>
+                    <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
+                  </div>
+                  <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
+                  <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
+                </fieldset>
+              </section>
+            </div>
+            <div class="block">
+              <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
+            </div>
+          </div>
+          <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
+            <div class="block">
+              <section class="interface-controls" aria-label="界面">
+                <label class="notice-row" for="floating-button"><span class="row-text">悬浮按钮</span><span class="switch"><input id="floating-button" type="checkbox" aria-label="悬浮按钮"><span></span></span></label>
+              </section>
+            </div>
+          </div>
+        </div>
+      </details>
+    </main>`;
+
+  const PANEL_CSS = `
+    .btr-popup {
+      --scheme: dark; --bg: #17191f; --surface: #20232a; --hover: #292d35;
+      --divider: #343943; --control-border: #444b57;
+      --text: #f5f7fb; --label: #c9ced9; --button-text: #d9dee8;
+      --muted: #949baa; --subtle: #8a93a6; --switch: #313a4c; --track: #3a3e47;
+      --error: #f28b85; --success: #9fd9a8; --focus: #fff; --tab: #343943;
+      --shadow: 0 24px 60px rgba(0, 0, 0, .5), 0 2px 10px rgba(0, 0, 0, .3);
+    }
+    .btr-popup[data-theme="light"] {
+      --scheme: light; --bg: #fff; --surface: #f4f5f8; --hover: #e8ebf0;
+      --divider: #d6dae2; --control-border: #aeb6c4;
+      --text: #202532; --label: #363f50; --button-text: #363f50;
+      --muted: #596579; --subtle: #596579; --switch: #758197; --track: #d6dae2;
+      --error: #b42318; --success: #227536; --focus: #244e9b; --tab: #fff;
+      --shadow: 0 24px 60px rgba(15, 23, 42, .18), 0 2px 10px rgba(15, 23, 42, .08);
+    }
+    * { box-sizing: border-box; }
+    .btr-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); }
+    .btr-popup { position: fixed; top: 72px; right: 24px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; border: 0; border-radius: 16px; box-shadow: var(--shadow); color-scheme: var(--scheme); font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: normal; text-align: left; user-select: none; -webkit-user-select: none; }
+    input, textarea { user-select: text; -webkit-user-select: text; }
+    /* The panel takes the focus when it opens, for the keyboard; it is no control to outline. */
+    .btr-popup:focus { outline: none; }
+    main { padding: 18px 18px 14px; }
+    header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 18px; }
+    .logo { display: block; width: 42px; height: 42px; }
+    h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
+    .name { display: grid; gap: 2px; min-width: 0; }
+    .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+    .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
+    /* With the master switch off the panel says so, and what only works with BTR on fades out
+       and cannot be used: not 调试 (the notices and the diagnostic copy) or the floating button,
+       which still apply. */
+    .disabled-note { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(251, 114, 153, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
+    [data-needs-enabled] { transition: opacity .2s ease, filter .2s ease; }
+    main.is-off [data-needs-enabled] { opacity: .38; filter: grayscale(1); pointer-events: none; user-select: none; }
+    .also-running { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(245, 179, 1, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
+    .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
+    .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }
+    .github-link:focus-visible, .theme-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .github-link svg, .theme-toggle svg { width: 18px; height: 18px; }
+    .theme-toggle { margin-left: -6px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+    .theme-toggle svg { display: none; }
+    .theme-toggle[data-value="auto"] .icon-auto, .theme-toggle[data-value="light"] .icon-light, .theme-toggle[data-value="dark"] .icon-dark { display: block; }
+    .switch { position: relative; display: block; width: 42px; height: 24px; }
+    .switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+    .switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--switch); cursor: pointer; transition: 160ms ease; }
+    .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: 160ms ease; }
+    .switch input:checked + span { background: #fb7299; }
+    .switch input:checked + span::after { transform: translateX(18px); }
+    .switch input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .mode-select { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    .mode-select label { position: relative; }
+    .mode-select input { position: absolute; opacity: 0; }
+    .mode-select span { display: block; padding: 8px 6px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; text-align: center; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
+    .mode-select input:not(:checked) + span:hover { color: var(--text); }
+    .mode-select input:checked + span { color: #fff; background: #fb7299; }
+    .mode-select input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: -3px; }
+    .takeover-select { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; margin-bottom: 8px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    .takeover-select label { position: relative; }
+    .takeover-select input { position: absolute; opacity: 0; }
+    .takeover-select span { display: block; padding: 8px 6px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; text-align: center; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
+    .takeover-select input:not(:checked) + span:hover { color: var(--text); }
+    .takeover-select input:checked + span { color: #fff; background: #fb7299; }
+    .takeover-select input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: -3px; }
+    .takeover-note { margin: 0; padding: 0 2px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+    .custom-hosts { margin-top: 8px; padding: 14px 16px; border-radius: 12px; background: var(--surface); }
+    .custom-hosts[hidden] { display: none; }
+    .custom-head { display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 13px; }
+    .custom-head b { min-width: 28px; padding: 2px 8px; border-radius: 5px; background: #fb7299; color: #fff; font-size: 12px; text-align: center; }
+    .custom-note { margin: 8px 0 0; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+    .custom-note[hidden] { display: none; }
+    .host-group { min-width: 0; margin: 12px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--divider); }
+    .host-group legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
+    .host-option { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--label); font-size: 11px; overflow-wrap: anywhere; cursor: pointer; }
+    .host-option input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: #fb7299; cursor: pointer; }
+    .manual-host { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: var(--label); font-size: 11px; overflow-wrap: anywhere; }
+    .manual-host button { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; line-height: 20px; cursor: pointer; }
+    .host-form { display: flex; gap: 6px; margin-top: 10px; }
+    .host-form input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+    .host-form button { flex: none; padding: 6px 10px; border: 0; border-radius: 5px; background: #fb7299; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+    .host-error { min-height: 0; margin: 6px 0 0; color: var(--error); font-size: 11px; }
+    .host-error:empty { display: none; }
+    .host-form input:focus-visible, .host-form button:focus-visible, .manual-host button:focus-visible, .host-option input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .controls { padding: 12px 16px; border-radius: 12px; background: var(--surface); }
+    .control-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+    .control-title label { color: var(--label); font-size: 13px; }
+    /* A switch row is pressed as a whole: it reaches to near the edge of its block, and its
+       padding stands in for the space the rows used to keep between them. */
+    .auto-row, .accel-row, .notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 -10px; padding: 6px 10px; border-radius: 6px; color: var(--label); font-size: 13px; cursor: pointer; transition: background 160ms ease; }
+    .auto-row:hover, .accel-row:hover, .notice-row:hover { background: var(--hover); }
+    .auto-row { margin-bottom: 7px; }
+    .auto-row .switch, .accel-row .switch, .notice-row .switch { flex: none; }
+    .row-text { display: flex; flex-direction: column; gap: 2px; }
+    .auto-row small, .accel-row small { color: var(--subtle); font-size: 11px; }
+    .controls.auto .slider, .controls.auto .scale { opacity: 0.4; pointer-events: none; }
+    output { min-width: 42px; padding: 4px 8px; border-radius: 5px; color: #fff; background: #fb7299; font-size: 13px; font-weight: 700; text-align: center; }
+    .slider { position: relative; width: 100%; height: 18px; border-radius: 9px; background: var(--track); }
+    .slider-fill { position: absolute; top: 0; bottom: 0; left: 0; width: 60%; border-radius: 9px; background: #fb7299; pointer-events: none; }
+    input[type="range"] { position: absolute; inset: 0; width: 100%; height: 18px; margin: 0; appearance: none; -webkit-appearance: none; border: 0; outline: 0; background: transparent; cursor: pointer; }
+    input[type="range"]::-webkit-slider-runnable-track { height: 18px; background: transparent; }
+    input[type="range"]::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -3px; appearance: none; -webkit-appearance: none; border: 2px solid #fff; border-radius: 50%; background: #fff; }
+    input[type="range"]:focus-visible::-webkit-slider-thumb { border-color: #fb7299; }
+    .scale { display: flex; justify-content: space-between; margin-top: 5px; color: var(--subtle); font-size: 10px; }
+    .scale span { width: 24px; text-align: center; }
+    .scale span:first-child { text-align: left; }
+    .scale span:last-child { text-align: right; }
+    .accel-controls, .site-controls, .notice-controls, .interface-controls { padding: 5px 16px; border-radius: 12px; background: var(--surface); }
+    .debug-filters { min-width: 0; margin: 9px 0 7px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
+    .debug-filters[hidden] { display: none; }
+    .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
+    .debug-filter-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+    .debug-filter-actions button { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; font-size: 11px; cursor: pointer; }
+    .debug-filter-actions button:hover, .manual-host button:hover { border-color: #fb7299; }
+    .debug-filter-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
+    .debug-filter-options label { display: flex; align-items: center; gap: 7px; color: var(--label); font-size: 12px; cursor: pointer; }
+    .debug-filter-options input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: #fb7299; cursor: pointer; }
+    .debug-filter-actions button:focus-visible, .debug-filter-options input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+    .debug-copy button:hover { background: #fb7299; }
+    .debug-copy button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .debug-copy-status { color: var(--success); font-size: 12px; }
+    .debug-copy-status.failed { color: var(--error); }
+    .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .reset-settings { width: 100%; padding: 11px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    .reset-settings:hover { background: var(--hover); }
+    .reset-settings[data-asking] { color: var(--error); font-weight: 600; }
+    .reset-settings:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
+    .debug-copy-text[hidden] { display: none; }
+    .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
+    .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 36px); margin: 0 18px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
+    .btr-close:hover { background: #565e6c; }
+    /* Solid, for the content scrolling under it. */
+    .btr-popup[data-theme="light"] .btr-close { background: #dde1e8; color: #1f2329; }
+    .btr-popup[data-theme="light"] .btr-close:hover { background: #d0d5de; }
+    .btr-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .advanced > summary { display: block; padding: 14px 16px; border-radius: 12px; background: var(--surface); list-style: none; cursor: pointer; transition: background 160ms ease; }
+    .advanced > summary::-webkit-details-marker { display: none; }
+    .advanced > summary:hover { background: var(--hover); }
+    .advanced > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .advanced-title { display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 13px; }
+    .advanced-title svg { flex: none; width: 16px; height: 16px; color: var(--muted); }
+    .advanced > summary small { display: block; margin-top: 6px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+    .view-main, .tab-panel { display: grid; gap: 14px; align-content: start; min-width: 0; }
+    .view-main { margin-bottom: 14px; }
+    .tab-panel[hidden], [data-host-hidden] { display: none !important; }
+    .block { min-width: 0; }
+    .block-title { margin: 0 0 6px 2px; color: var(--subtle); font-size: 11px; font-weight: 600; line-height: 1.4; }
+    .control-title small { display: block; margin-top: 2px; color: var(--subtle); font-size: 11px; }
+    .buffer-controls .scale span { width: auto; }
+    .buffer-controls .auto-row { margin: 10px -10px 0; }
+    /* 高级设置 is a page of its own: its entry leads in, its bar back, and its tabs keep each
+       part short enough for one screen. */
+    main.is-advanced .view-main, main.is-advanced .advanced > summary { display: none; }
+    .advanced > summary .advanced-title svg { transform: rotate(-90deg); }
+    .page-bar { display: flex; align-items: center; gap: 4px; margin: -4px 0 12px -6px; }
+    .page-back { display: grid; flex: none; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    .page-back:hover { background: var(--hover); color: var(--text); }
+    .page-back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .page-back svg { width: 18px; height: 18px; transform: rotate(90deg); }
+    .page-title { color: var(--text); font-size: 15px; font-weight: 600; }
+    /* Further from what is under it than the blocks are from each other, so the tabs do not
+       read as one more block of the page they switch. */
+    .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 24px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    .tabs button { padding: 7px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
+    .tabs button:hover { color: var(--text); }
+    .tabs button[aria-selected="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+    .tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+    .host-option, .debug-filter-options label { border-radius: 4px; }
+    .btr-popup { --ripple: rgba(251, 114, 153, .35); }
+    .btr-popup[data-theme="light"] { --ripple: rgba(251, 114, 153, .3); }
+    .mode-select input:checked + span, .takeover-select input:checked + span, .switch input:checked + span, .host-form button, .debug-copy button:hover { --ripple: rgba(255, 255, 255, .35); }
+    ${RIPPLE_CSS}
+  `;
+
+  const LAUNCHER_CSS = `
+    .btr-launcher { position: fixed; right: 76px; bottom: 116px; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: #fb7299; color: #fff; font: 700 13px/1 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; letter-spacing: .3px; cursor: grab; opacity: .6; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); transition: opacity 160ms ease, transform 160ms ease, left 180ms ease, right 180ms ease; }
+    .btr-launcher:hover, .btr-launcher:focus-visible { opacity: 1; transform: scale(1.06); }
+    .btr-launcher:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    .btr-launcher.dragging { cursor: grabbing; opacity: 1; transform: scale(1.1); transition: opacity 160ms ease, transform 160ms ease; }
+    @media (max-width: 700px) { .btr-launcher { width: 40px; height: 40px; font-size: 12px; } }
+    .btr-launcher { --ripple: rgba(255, 255, 255, .35); }
+    .btr-launcher.guiding { opacity: 1; animation: btr-guide-pulse 1.6s ease-in-out infinite; }
+    @keyframes btr-guide-pulse { 50% { transform: scale(1.14); } }
+    @media (prefers-reduced-motion: reduce) { .btr-launcher.guiding { animation: none; } }
+    ${RIPPLE_CSS}
+  `;
+  const GUIDE_CSS = `
+    .btr-guide { position: fixed; inset: 0; background: rgba(0, 0, 0, .72); cursor: pointer; font: 16px/1.5 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+    .btr-guide p { position: absolute; left: 50%; top: 42%; margin: 0; color: #fff; font-size: 22px; white-space: nowrap; transform: translate(-50%, -50%); }
+    .btr-guide b { color: #fb7299; font-weight: 700; }
+    .btr-guide svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .btr-guide path { fill: none; stroke: #fff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    @media (max-width: 480px) { .btr-guide p { font-size: 17px; } }
+  `;
+  // The guide used to come back on every Bilibili subdomain: its record was in that site's
+  // localStorage (#26). It is now in the stored settings (the script manager's, shared by all
+  // subdomains), with a cookie on .bilibili.com for when those fall back to localStorage. Both
+  // reach every subdomain, so 恢复默认设置 can take the record back everywhere.
+  // The desktop client is one site, and it brings its cookies back by itself each time it
+  // starts: there a cookie has nothing to do and could not be cleared.
+  const GUIDE_COOKIE = "BTR.guideDone";
+  function writeGuideCookie(value, seconds) {
+    if (hostApp) return;
+    try { document.cookie = `${GUIDE_COOKIE}=${value}; domain=.bilibili.com; path=/; max-age=${seconds}; SameSite=Lax; Secure`; } catch (_error) {}
+  }
+  function guideMarked() {
+    if (hostApp) return false;
+    try { return document.cookie.split("; ").includes(`${GUIDE_COOKIE}=1`); } catch (_error) { return false; }
+  }
+  const markGuide = () => writeGuideCookie("1", 315360000);
+  const forgetGuide = () => writeGuideCookie("", 0);
+
+  let current = null;
+  // bridge.js sends the stored settings when they load or change, and the page its stats.
+  let latestSettings = null;
+  let latestStats = null;
+  // The debug notices shown on this page, newest last, for the diagnostic copy.
+  const noticeHistory = [];
+
+  // Everything needed to look into a report, as text to paste into an issue. The page's own
+  // reports already leave out download addresses and account data; any address that is left
+  // is cut down to its host and path, so no signature or token goes along.
+  function diagnostics() {
+    const safely = (read) => { try { return read(); } catch (error) { return `读取失败：${String(error?.message || error)}`; } };
+    const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
+    const sections = [
+      ["环境", {
+        BTR: "2026.10.30.1-d1",
+        渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
+        同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
+        脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
+        浏览器: navigator.userAgent,
+        页面: `${location.origin}${location.pathname}`,
+        时间: new Date().toISOString(),
+        语言: navigator.language,
+        窗口: `${root.innerWidth}x${root.innerHeight}`
+      }],
+      ["设置", latestSettings || "设置还没加载"]
+    ];
+    const video = root.__biliThreadRipperDebug;
+    if (typeof video?.report === "function") sections.push(["视频接管", safely(() => parse(video.report()))]);
+    const auto = root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency;
+    if (typeof auto?.status === "function") sections.push(["自动线程数", safely(() => auto.status())]);
+    // The live player often sits in a live.bilibili.com iframe, where its module runs.
+    const liveModules = [root, ...[...document.querySelectorAll("iframe")].map((frame) => safely(() => frame.contentWindow))]
+      .map((view) => safely(() => view?.__biliThreadRipperLiveDebug)).filter((api) => api && typeof api.getStats === "function");
+    liveModules.forEach((api, index) => sections.push([liveModules.length > 1 ? `直播模块 ${index + 1}` : "直播模块", safely(() => ({ stats: api.getStats(), context: api.getContext?.() }))]));
+    sections.push(["最近的 Debug 提示", noticeHistory.length
+      ? noticeHistory.map((item) => `${new Date(item.at).toISOString().slice(11, 19)} [${item.level}/${item.category}] ${item.title}${item.count > 1 ? ` ×${item.count}` : ""}${item.detail ? ` — ${item.detail}` : ""}`).join("\n")
+      : "（还没有。打开 Debug 模式以后显示过的提示才会记在这里）"]);
+    const text = sections.map(([title, value]) => `## ${title}\n${typeof value === "string" ? value : JSON.stringify(value, null, 1)}`).join("\n\n");
+    return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
+  }
+  const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
+  // The panel opens on its main page, or on 高级设置 when it was closed there, for the rest
+  // of this page.
+  let advancedOpen = false;
+  // The tab of 高级设置 last shown, for the rest of this page too.
+  let advancedTab = "network";
+
+  function open(options = {}) {
+    if (current) return;
+    // A modal <dialog> sits in the browser's top layer and is the only interactive part of
+    // the page while it is open. A plain fixed layer can end up under the page's own
+    // top-layer elements, or inside a part of the page made inert, and then clicks on it
+    // land on whatever is beneath (issue #8).
+    const dialog = document.createElement("dialog");
+    dialog.id = DIALOG_ID;
+    dialog.style.cssText = "all:initial!important;display:block!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;overflow:visible!important;z-index:2147483646!important;";
+    const dialogStyle = document.createElement("style");
+    dialogStyle.textContent = `#${DIALOG_ID}::backdrop{background:transparent}`;
+    const host = document.createElement("div");
+    host.id = HOST_ID;
+    host.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;";
+    dialog.append(dialogStyle, host);
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = PANEL_CSS + (hostApp?.css || "");
+    const backdrop = document.createElement("div");
+    backdrop.className = "btr-backdrop";
+    const panel = document.createElement("div");
+    panel.className = "btr-popup";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "线程撕裂者设置");
+    panel.tabIndex = -1;
+    panel.innerHTML = PANEL_HTML;
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "btr-close";
+    closeButton.textContent = "关闭";
+    panel.append(closeButton);
+    shadow.append(style, backdrop, panel);
+
+    const $ = (id) => shadow.getElementById(id);
+    // The released script and the Canary are both switched on: only this one runs.
+    const other = otherScript();
+    if (other) {
+      const alsoRunning = $("also-running");
+      alsoRunning.textContent = `正式版和 Canary 同时启用了。现在生效的是${CHANNEL_NAMES[SCRIPT_CHANNEL]}，${CHANNEL_NAMES[other] || other}没有运行。请在脚本管理器里只启用一个。`;
+      alsoRunning.hidden = false;
+    }
+    for (const selector of hostApp?.hide || []) {
+      for (const node of panel.querySelectorAll(selector)) (node.closest(".block") || node).dataset.hostHidden = "";
+    }
+    if (hostApp?.projectUrl) $("github-link").href = hostApp.projectUrl;
+    hostApp?.mount?.(panel);
+    const advanced = $("advanced");
+    const panelMain = panel.querySelector("main");
+    const tabs = [...panel.querySelectorAll('[role="tab"]:not([data-host-hidden])')];
+    const tabPanels = [...panel.querySelectorAll("[data-tab-panel]")];
+    const still = () => root.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const EASE = "cubic-bezier(.2, .8, .2, 1)";
+    // The panel's height glides to what it shows next instead of jumping there.
+    const resize = (change) => {
+      const from = panel.offsetHeight;
+      change();
+      const to = panel.offsetHeight;
+      if (still() || Math.abs(to - from) < 2) return;
+      panel.style.overflow = "hidden";
+      panel.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 240, easing: EASE }).finished
+        .finally(() => { panel.style.overflow = ""; }).catch(() => {});
+    };
+    const enter = (node, from) => {
+      if (node && !still()) node.animate([{ opacity: 0, transform: from }, { opacity: 1, transform: "none" }], { duration: 240, easing: EASE });
+    };
+    const selectTab = (name) => {
+      advancedTab = name;
+      for (const tab of tabs) {
+        tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
+        tab.tabIndex = tab.dataset.tab === name ? 0 : -1;
+      }
+      for (const part of tabPanels) part.hidden = part.dataset.tabPanel !== name;
+    };
+    const showAdvanced = (show, animate = true) => {
+      const change = () => {
+        advanced.open = show;
+        panelMain.classList.toggle("is-advanced", show);
+      };
+      if (!animate) return change();
+      clearRipples(panel);
+      resize(change);
+      enter(panel.querySelector(show ? ".advanced-page" : ".view-main"), show ? "translateX(18px)" : "translateX(-18px)");
+    };
+    // "自定义" in the gear menu opens it on the custom servers, under 网络.
+    selectTab(options.advanced === true ? "network" : advancedTab);
+    showAdvanced(advancedOpen || options.advanced === true, false);
+    advanced.addEventListener("toggle", () => { advancedOpen = advanced.open; });
+    advanced.querySelector("summary").addEventListener("click", (event) => {
+      event.preventDefault();
+      showAdvanced(true);
+      // From the keyboard, the focus follows to the page's way back.
+      if (event.detail === 0) $("advanced-back").focus();
+    });
+    $("advanced-back").addEventListener("click", (event) => {
+      showAdvanced(false);
+      if (event.detail === 0) advanced.querySelector("summary").focus();
+    });
+    for (const tab of tabs) {
+      tab.addEventListener("click", () => {
+        if (tab.dataset.tab === advancedTab) return;
+        resize(() => selectTab(tab.dataset.tab));
+        enter(tabPanels.find((part) => !part.hidden), "translateY(6px)");
+      });
+    }
+    // The arrow keys go from tab to tab, as in any tab list.
+    panel.querySelector(".tabs").addEventListener("keydown", (event) => {
+      const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      const next = tabs[(tabs.findIndex((tab) => tab.dataset.tab === advancedTab) + step + tabs.length) % tabs.length];
+      next.focus();
+      next.click();
+    });
+    // A press ripples over a whole switch row, the colored part of any other switch or of a
+    // choice, otherwise over the control itself.
+    panel.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !(event.target instanceof Element)) return;
+      const target = event.target.closest(".auto-row, .accel-row, .notice-row")
+        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option, .debug-filter-options label");
+      if (!target || target.matches(":disabled")) return;
+      ripple(target.matches(".switch, .mode-select label, .takeover-select label") ? target.querySelector("span") : target, event);
+    });
+    const enabled = $("enabled");
+    const disabledNote = $("disabled-note");
+    const needsEnabled = [...panel.querySelectorAll("[data-needs-enabled]")];
+    const concurrency = $("concurrency");
+    const autoConcurrency = $("auto-concurrency");
+    const theme = $("theme");
+    const systemTheme = root.matchMedia("(prefers-color-scheme: dark)");
+    const systemColors = () => (systemTheme.matches ? "dark" : "light");
+    const applyTheme = () => {
+      panel.dataset.theme = theme.dataset.value === "auto" ? systemColors() : theme.dataset.value;
+    };
+    const showTheme = (value) => {
+      theme.dataset.value = value;
+      theme.title = `面板主题：${THEME_LABELS[value]}。点击切换`;
+      theme.setAttribute("aria-label", theme.title);
+      applyTheme();
+    };
+    systemTheme.addEventListener("change", applyTheme);
+    const threadValue = $("thread-value");
+    const sliderFill = $("slider-fill");
+    const bufferAhead = $("buffer-ahead");
+    const bufferValue = $("buffer-value");
+    const bufferFill = $("buffer-fill");
+    const secondaryBuffer = $("secondary-buffer");
+    const errorNotices = $("error-notices");
+    const debugNotices = $("debug-notices");
+    const liveEnabled = $("live-enabled");
+    const episodeEnabled = $("episode-enabled");
+    const blockInternational = $("block-international");
+    const floatingButton = $("floating-button");
+    const debugFilters = $("debug-filters");
+    const resetSettings = $("reset-settings");
+    const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
+    const customSection = $("custom-hosts");
+    const hostInput = $("host-input");
+    const hostError = $("host-error");
+    const activeCount = $("active-count");
+    const totalSpeed = panel.querySelector(".run-speed");
+    let customHosts = [];
+
+    const save = (update) => post("settings-update", update);
+
+    function setSlider(threads) {
+      const index = THREAD_OPTIONS.indexOf(Number(threads));
+      const safe = index < 0 ? 1 : index;
+      concurrency.value = String(safe);
+      // In the automatic mode the badge says so; the slider keeps the viewer's own count.
+      threadValue.value = autoConcurrency.checked ? "自动" : String(THREAD_OPTIONS[safe]);
+      concurrency.setAttribute("aria-valuetext", String(THREAD_OPTIONS[safe]));
+      sliderFill.style.width = `${safe / (THREAD_OPTIONS.length - 1) * 100}%`;
+    }
+
+    function setBufferSlider(seconds) {
+      const index = BUFFER_OPTIONS.indexOf(Number(seconds));
+      const safe = index < 0 ? 1 : index;
+      bufferAhead.value = String(safe);
+      bufferValue.value = `${BUFFER_OPTIONS[safe]}s`;
+      bufferAhead.setAttribute("aria-valuetext", `${BUFFER_OPTIONS[safe]} 秒`);
+      bufferFill.style.width = `${safe / (BUFFER_OPTIONS.length - 1) * 100}%`;
+    }
+
+    function setMode(mode) {
+      for (const radio of shadow.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === mode;
+      customSection.hidden = mode !== "custom";
+    }
+
+    function renderHosts() {
+      $("custom-count").textContent = String(customHosts.length);
+      $("custom-empty").hidden = customHosts.length > 0;
+      const known = $("known-hosts");
+      known.replaceChildren(...HOST_GROUPS.map(([title, hosts]) => {
+        const group = document.createElement("fieldset");
+        group.className = "host-group";
+        const legend = document.createElement("legend");
+        legend.textContent = title;
+        group.append(legend, ...hosts.map((value) => {
+          const label = document.createElement("label");
+          label.className = "host-option";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = value;
+          input.checked = customHosts.includes(value);
+          const text = document.createElement("span");
+          text.textContent = value;
+          label.append(input, text);
+          return label;
+        }));
+        return group;
+      }));
+      $("manual-hosts").replaceChildren(...customHosts.filter((value) => !KNOWN_HOSTS.includes(value)).map((value) => {
+        const row = document.createElement("div");
+        row.className = "manual-host";
+        const text = document.createElement("span");
+        text.textContent = value;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.dataset.remove = value;
+        remove.textContent = "×";
+        remove.setAttribute("aria-label", `删除 ${value}`);
+        row.append(text, remove);
+        return row;
+      }));
+    }
+
+    function setCustomHosts(next) {
+      customHosts = next;
+      renderHosts();
+      save({ customHosts });
+    }
+
+    function render(settings) {
+      showTheme(settings.theme);
+      enabled.checked = settings.enabled;
+      disabledNote.hidden = settings.enabled !== false;
+      panelMain.classList.toggle("is-off", settings.enabled === false);
+      for (const node of needsEnabled) node.inert = settings.enabled === false;
+      for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
+      autoConcurrency.checked = settings.autoConcurrency === true;
+      setSlider(settings.concurrency);
+      setBufferSlider(settings.bufferAheadSeconds);
+      secondaryBuffer.checked = settings.secondaryBuffer === true;
+      concurrency.disabled = autoConcurrency.checked;
+      concurrency.closest(".controls").classList.toggle("auto", autoConcurrency.checked);
+      setMode(settings.mode);
+      customHosts = settings.customHosts;
+      renderHosts();
+      liveEnabled.checked = settings.liveEnabled === true;
+      episodeEnabled.checked = settings.episodeEnabled !== false;
+      blockInternational.checked = settings.blockInternational === true;
+      floatingButton.checked = settings.floatingButton !== false;
+      errorNotices.checked = settings.errorNotices;
+      debugNotices.checked = settings.debugNotices;
+      debugFilters.hidden = !settings.debugNotices;
+      for (const input of debugCategoryInputs) input.checked = settings.debugCategories[input.dataset.debugCategory] !== false;
+    }
+
+    const saveDebugCategories = () => save({ debugCategories: Object.fromEntries(debugCategoryInputs.map((input) => [input.dataset.debugCategory, input.checked])) });
+    enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
+    // Each click goes on to the next choice: from 自动 to the colors the system is not showing,
+    // then to the ones it is (now kept by hand), then back to 自动.
+    theme.addEventListener("click", () => {
+      const system = systemColors();
+      const other = system === "dark" ? "light" : "dark";
+      const current = theme.dataset.value;
+      const next = current === "auto" ? other : current === other ? system : "auto";
+      showTheme(next);
+      save({ theme: next });
+    });
+    liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
+    episodeEnabled.addEventListener("change", () => save({ episodeEnabled: episodeEnabled.checked }));
+    blockInternational.addEventListener("change", () => save({ blockInternational: blockInternational.checked }));
+    floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
+    concurrency.addEventListener("input", () => {
+      const threads = THREAD_OPTIONS[Number(concurrency.value)];
+      setSlider(threads);
+      save({ concurrency: threads });
+    });
+    autoConcurrency.addEventListener("change", () => save({ autoConcurrency: autoConcurrency.checked }));
+    bufferAhead.addEventListener("input", () => {
+      const seconds = BUFFER_OPTIONS[Number(bufferAhead.value)];
+      setBufferSlider(seconds);
+      save({ bufferAheadSeconds: seconds });
+    });
+    secondaryBuffer.addEventListener("change", () => save({ secondaryBuffer: secondaryBuffer.checked }));
+    for (const radio of shadow.querySelectorAll('input[name="mode"]')) {
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        setMode(radio.value);
+        save({ mode: radio.value });
+      });
+    }
+    for (const radio of shadow.querySelectorAll('input[name="takeover"]')) {
+      radio.addEventListener("change", () => { if (radio.checked) save({ takeover: radio.value }); });
+    }
+    $("known-hosts").addEventListener("change", (event) => {
+      const input = event.target;
+      if (!(input instanceof HTMLInputElement) || !KNOWN_HOSTS.includes(input.value)) return;
+      if (input.checked && customHosts.length >= MAX_CUSTOM_HOSTS) {
+        input.checked = false;
+        hostError.textContent = `最多选 ${MAX_CUSTOM_HOSTS} 个服务器。`;
+        return;
+      }
+      hostError.textContent = "";
+      setCustomHosts(input.checked ? [...customHosts.filter((value) => value !== input.value), input.value] : customHosts.filter((value) => value !== input.value));
+    });
+    $("manual-hosts").addEventListener("click", (event) => {
+      const value = event.target instanceof HTMLElement ? event.target.dataset.remove : "";
+      if (value) setCustomHosts(customHosts.filter((item) => item !== value));
+    });
+    $("host-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const value = core.normalizeCdnHost(hostInput.value);
+      if (!value) hostError.textContent = "这不是 B 站的视频服务器地址。";
+      else if (customHosts.includes(value)) hostError.textContent = "这个服务器已经在列表里了。";
+      else if (customHosts.length >= MAX_CUSTOM_HOSTS) hostError.textContent = `最多选 ${MAX_CUSTOM_HOSTS} 个服务器。`;
+      else {
+        hostError.textContent = "";
+        hostInput.value = "";
+        setCustomHosts([...customHosts, value]);
+      }
+    });
+    // It asks in place: the second click is the answer, and going elsewhere takes the question back.
+    let resetAsked = 0;
+    const stopAsking = () => {
+      root.clearTimeout(resetAsked);
+      delete resetSettings.dataset.asking;
+      resetSettings.textContent = "恢复默认设置";
+    };
+    resetSettings.addEventListener("click", () => {
+      if (resetSettings.dataset.asking) {
+        stopAsking();
+        // Back to first use: the guide comes up again as soon as the panel is out of the way.
+        forgetGuide();
+        post("settings-reset");
+        current?.close();
+        return;
+      }
+      resetSettings.dataset.asking = "true";
+      resetSettings.textContent = "确认？";
+      resetAsked = root.setTimeout(stopAsking, 4000);
+    });
+    resetSettings.addEventListener("blur", stopAsking);
+    errorNotices.addEventListener("change", () => save({ errorNotices: errorNotices.checked }));
+    debugNotices.addEventListener("change", () => {
+      debugFilters.hidden = !debugNotices.checked;
+      save({ debugNotices: debugNotices.checked });
+    });
+    for (const input of debugCategoryInputs) input.addEventListener("change", saveDebugCategories);
+    $("debug-select-all").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = true; saveDebugCategories(); });
+    $("debug-select-none").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = false; saveDebugCategories(); });
+    const copyStatus = $("debug-copy-status");
+    const copyText = $("debug-copy-text");
+    let copyStatusTimer = null;
+    $("debug-copy").addEventListener("click", async () => {
+      const text = diagnostics();
+      let copied = false;
+      try { await navigator.clipboard.writeText(text); copied = true; } catch (_error) {}
+      if (!copied) {
+        // Without the clipboard API (or its permission): select the text for the viewer.
+        copyText.hidden = false;
+        copyText.value = text;
+        copyText.focus();
+        copyText.select();
+        try { copied = document.execCommand("copy"); } catch (_error) {}
+      }
+      copyStatus.classList.toggle("failed", !copied);
+      copyStatus.textContent = copied ? "已复制" : "没能自动复制，请手动复制下面的内容";
+      clearTimeout(copyStatusTimer);
+      if (copied) copyStatusTimer = setTimeout(() => { copyStatus.textContent = ""; }, 2500);
+    });
+
+    // Keys typed into the panel belong to it. The shadow root hides the input from the page,
+    // so the player's shortcuts (space, F, arrows) would otherwise react to them.
+    const keepKeys = (event) => { if (event.key !== "Escape") event.stopPropagation(); };
+    for (const type of ["keydown", "keyup", "keypress"]) panel.addEventListener(type, keepKeys);
+
+    // The threads and the speed now: asking for stats makes the page send fresh ones. The
+    // numbers run to their new values instead of jumping there.
+    const shown = { threads: 0, speed: 0 };
+    let rollFrame = 0;
+    const showRunState = (threads, speed) => {
+      activeCount.textContent = String(Math.round(threads));
+      totalSpeed.textContent = formatSpeed(speed);
+    };
+    const refresh = () => {
+      const from = { ...shown };
+      shown.threads = Math.max(0, Math.trunc(Number(latestStats?.activeThreads) || 0));
+      shown.speed = Math.max(0, Number(latestStats?.totalSpeedBps) || 0);
+      root.cancelAnimationFrame(rollFrame);
+      if (still() || (from.threads === shown.threads && from.speed === shown.speed)) showRunState(shown.threads, shown.speed);
+      else {
+        const startedAt = performance.now();
+        const roll = (now) => {
+          if (current?.host !== host) return;
+          const progress = Math.min(1, (now - startedAt) / 360);
+          const eased = 1 - (1 - progress) ** 3;
+          showRunState(from.threads + (shown.threads - from.threads) * eased, from.speed + (shown.speed - from.speed) * eased);
+          if (progress < 1) rollFrame = root.requestAnimationFrame(roll);
+        };
+        rollFrame = root.requestAnimationFrame(roll);
+      }
+      post("get-stats");
+    };
+    const timer = setInterval(refresh, 400);
+    const onKey = (event) => { if (event.key === "Escape") close(); };
+    // However the panel was found, the viewer has found it.
+    launcher?.finishGuide();
+    const close = () => {
+      if (current?.host !== host) return;
+      current = null;
+      clearInterval(timer);
+      root.cancelAnimationFrame(rollFrame);
+      systemTheme.removeEventListener("change", applyTheme);
+      launcher?.apply();
+      document.removeEventListener("keydown", onKey, true);
+      clearRipples(panel);
+      dialog.remove();
+    };
+    // Changes made elsewhere (the gear menu, another tab) arrive as new settings.
+    current = { host, close, render };
+    launcher?.apply();
+    backdrop.addEventListener("click", close);
+    closeButton.addEventListener("click", close);
+    document.addEventListener("keydown", onKey, true);
+    // Esc on a modal dialog closes it natively; clean up the same way as the button.
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
+    (document.body || document.documentElement).append(dialog);
+    try { dialog.showModal(); }
+    catch (_error) { dialog.setAttribute("open", ""); }
+    // Until bridge.js sends the stored settings, its defaults: 自动线程数 is on there, while
+    // normalizeSettings on its own leaves it off.
+    render(latestSettings || core.normalizeSettings({ autoConcurrency: true }));
+    post("get-settings");
+    refresh();
+    panel.focus();
+  }
+
+  const toggle = () => (current ? current.close() : open());
+
+  // The button in the corner of every bilibili page. The userscript manager's menu is not
+  // obvious (and on the home page people do not find it at all), so the panel needs a way in
+  // that is always visible.
+  // It hides while the video is fullscreen, while the panel itself is open, and when 悬浮按钮
+  // is switched off.
+  const launcher = (() => {
+    if (root.top !== root) return null;
+    const MARGIN = 12;
+    // How far a press has to travel before it counts as dragging rather than a click.
+    const DRAG_SLOP = 4;
+    // Let go this close to the left or right edge and it snaps flush to it; let go anywhere
+    // else and it simply stays where it was put.
+    const SNAP_PX = 72;
+    let host = null;
+    let button = null;
+    let wanted = true;
+    // Where the viewer left it, as shares of the window: 0 means stuck to the left edge, 1 to
+    // the right edge, anything between is a free spot. null: never moved.
+    let leftRatio = null;
+    let topRatio = null;
+    let dragging = null;
+    // The first-run guide waits for the stored settings: before they arrive nobody knows
+    // whether it was answered already.
+    let guide = null;
+    let guideAnswered = null;
+
+    function finishGuide() {
+      if (guideAnswered === true && !guide) return;
+      guideAnswered = true;
+      markGuide();
+      post("settings-update", { guideDone: true });
+      hideGuide();
+    }
+
+    function hideGuide() {
+      if (!guide) return;
+      root.cancelAnimationFrame(guide.frame);
+      guide.host.remove();
+      guide = null;
+      button?.classList.remove("guiding");
+    }
+
+    // The arrow is drawn again on every frame, so it stays on the button however the button
+    // or the window moves: from the edge of the text, curving, to just short of the button.
+    function drawGuide() {
+      if (!guide || !button?.isConnected) return;
+      guide.frame = root.requestAnimationFrame(drawGuide);
+      const target = button.getBoundingClientRect(), text = guide.text.getBoundingClientRect();
+      const toX = target.left + target.width / 2, toY = target.top + target.height / 2;
+      const fromX = text.left + text.width / 2, fromY = text.top + text.height / 2;
+      const distance = Math.hypot(toX - fromX, toY - fromY) || 1;
+      const unitX = (toX - fromX) / distance, unitY = (toY - fromY) / distance;
+      // Where the line from the text's middle leaves its box.
+      const leave = Math.min(unitX ? (text.width / 2 + 14) / Math.abs(unitX) : Infinity, unitY ? (text.height / 2 + 14) / Math.abs(unitY) : Infinity);
+      const stop = target.width / 2 + 16;
+      if (distance - leave - stop < 24) { guide.arrow.setAttribute("d", ""); return; }
+      const startX = fromX + unitX * leave, startY = fromY + unitY * leave;
+      const endX = toX - unitX * stop, endY = toY - unitY * stop;
+      const bend = (distance - leave - stop) * .18;
+      const bendX = (startX + endX) / 2 - unitY * bend, bendY = (startY + endY) / 2 + unitX * bend;
+      const angle = Math.atan2(endY - bendY, endX - bendX);
+      const barb = (side) => `${(endX - 15 * Math.cos(angle + side)).toFixed(1)} ${(endY - 15 * Math.sin(angle + side)).toFixed(1)}`;
+      guide.arrow.setAttribute("d", `M${startX.toFixed(1)} ${startY.toFixed(1)} Q${bendX.toFixed(1)} ${bendY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)} M${barb(.5)} L${endX.toFixed(1)} ${endY.toFixed(1)} L${barb(-.5)}`);
+    }
+
+    function showGuide() {
+      const guideHost = document.createElement("div");
+      guideHost.id = GUIDE_ID;
+      guideHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483644!important;";
+      const shadow = guideHost.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = GUIDE_CSS;
+      const cover = document.createElement("div");
+      cover.className = "btr-guide";
+      cover.innerHTML = '<p>点这里打开全新 <b>线程撕裂者</b> 设置</p><svg aria-hidden="true"><path></path></svg>';
+      // A click anywhere on it counts: it is the only thing on the screen that can be clicked.
+      cover.addEventListener("click", () => open());
+      shadow.append(style, cover);
+      (document.body || document.documentElement).append(guideHost);
+      guide = { host: guideHost, text: cover.querySelector("p"), arrow: cover.querySelector("path"), frame: 0 };
+      button.classList.add("guiding");
+      drawGuide();
+    }
+
+    // Bilibili fills the screen in two ways: the browser fullscreen API, and its own 网页全屏,
+    // which only resizes the player inside the page. Rather than follow Bilibili class names,
+    // this asks the picture itself: a video that covers the window is a video being watched
+    // full screen, whichever way it got there.
+    const fullscreen = () => {
+      if (document.fullscreenElement || document.webkitFullscreenElement || document.webkitIsFullScreen) return true;
+      const width = root.innerWidth, height = root.innerHeight;
+      if (!width || !height) return false;
+      for (const video of document.querySelectorAll("video")) {
+        const box = video.getBoundingClientRect();
+        if (box.width >= width * 0.92 && box.height >= height * 0.92) return true;
+      }
+      return false;
+    };
+
+    const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
+
+    // Puts it back where it was left. Without a saved spot it sits where it always did: to the
+    // left of Bilibili's own column of round buttons, near the bottom.
+    function place() {
+      if (!button) return;
+      const size = button.offsetHeight || 44;
+      const width = root.innerWidth || 0, height = root.innerHeight || 0;
+      if (leftRatio === null || topRatio === null) {
+        button.style.top = `${Math.round(Math.max(MARGIN, height - size - 116))}px`;
+        button.style.right = "76px";
+        button.style.left = "auto";
+        button.style.bottom = "auto";
+        return;
+      }
+      button.style.top = `${Math.round(clamp(topRatio * height, MARGIN, Math.max(MARGIN, height - size - MARGIN)))}px`;
+      button.style.bottom = "auto";
+      if (leftRatio >= 1) {
+        button.style.right = `${MARGIN}px`;
+        button.style.left = "auto";
+        return;
+      }
+      button.style.left = `${Math.round(clamp(leftRatio * width, MARGIN, Math.max(MARGIN, width - size - MARGIN)))}px`;
+      button.style.right = "auto";
+    }
+
+    function startDrag(event) {
+      if (event.button !== undefined && event.button !== 0) return;
+      const box = button.getBoundingClientRect();
+      dragging = {
+        pointerId: event.pointerId,
+        grabX: event.clientX - box.left,
+        grabY: event.clientY - box.top,
+        fromX: event.clientX,
+        fromY: event.clientY,
+        moved: false
+      };
+      try { button.setPointerCapture(event.pointerId); } catch (_error) {}
+    }
+
+    function moveDrag(event) {
+      if (!dragging || event.pointerId !== dragging.pointerId) return;
+      if (!dragging.moved && Math.hypot(event.clientX - dragging.fromX, event.clientY - dragging.fromY) < DRAG_SLOP) return;
+      dragging.moved = true;
+      button.classList.add("dragging");
+      const size = button.offsetHeight || 44;
+      const width = root.innerWidth, height = root.innerHeight;
+      // Kept as numbers: where it lands is decided from these, not from a fresh layout
+      // read, which the browser is free to postpone until the pointer is already up.
+      dragging.left = Math.round(clamp(event.clientX - dragging.grabX, MARGIN, width - size - MARGIN));
+      dragging.top = Math.round(clamp(event.clientY - dragging.grabY, MARGIN, height - size - MARGIN));
+      dragging.size = size;
+      button.style.left = `${dragging.left}px`;
+      button.style.top = `${dragging.top}px`;
+      button.style.right = "auto";
+      event.preventDefault();
+    }
+
+    function endDrag(event) {
+      if (!dragging || event.pointerId !== dragging.pointerId) return;
+      const { moved, left = 0, top = 0, size = 44 } = dragging;
+      try { button.releasePointerCapture(dragging.pointerId); } catch (_error) {}
+      dragging = null;
+      button.classList.remove("dragging");
+      if (!moved) return;
+      // Dropped within reach of the left or right edge: snap flush to it, and remember the
+      // edge rather than the pixel, so it stays there whatever the window size. Dropped
+      // anywhere else: it stays exactly where it was put.
+      const width = root.innerWidth || 1;
+      if (left <= SNAP_PX) leftRatio = 0;
+      else if (left + size >= width - SNAP_PX) leftRatio = 1;
+      else leftRatio = clamp(left / width, 0, 1);
+      topRatio = clamp(top / (root.innerHeight || 1), 0, 1);
+      place();
+      post("settings-update", { floatingButtonLeft: leftRatio, floatingButtonTop: topRatio });
+    }
+
+    function mount() {
+      if (host?.isConnected) return;
+      host = document.createElement("div");
+      host.id = LAUNCHER_ID;
+      host.style.cssText = "all:initial!important;position:fixed!important;right:0!important;bottom:0!important;width:0!important;height:0!important;z-index:2147483645!important;";
+      const shadow = host.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = LAUNCHER_CSS;
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "btr-launcher";
+      button.title = "线程撕裂者设置（可以拖动）";
+      button.setAttribute("aria-label", "线程撕裂者设置");
+      button.textContent = "BTR";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        // A drag that ended on the button itself must not also open the panel.
+        if (button.dataset.dragged === "true") {
+          button.dataset.dragged = "";
+          return;
+        }
+        toggle();
+      });
+      button.addEventListener("pointerdown", (event) => {
+        if (event.button === 0) ripple(button, event);
+        startDrag(event);
+      });
+      button.addEventListener("pointermove", moveDrag);
+      for (const type of ["pointerup", "pointercancel"]) {
+        button.addEventListener(type, (event) => {
+          const moved = Boolean(dragging?.moved);
+          endDrag(event);
+          if (moved) button.dataset.dragged = "true";
+        });
+      }
+      shadow.append(style, button);
+      (document.body || document.documentElement).append(host);
+      place();
+    }
+
+    function apply() {
+      const show = wanted && !fullscreen() && !current;
+      if (!show) {
+        hideGuide();
+        host?.remove();
+        return;
+      }
+      // Bilibili replaces large parts of the page when you navigate; mount puts it back if it went.
+      mount();
+      if (!dragging) place();
+      if (guide && !(guide.host.isConnected && button.isConnected)) hideGuide();
+      if (guideAnswered === false && !guide) showGuide();
+    }
+
+    const update = (settings) => {
+      wanted = settings?.floatingButton !== false;
+      // null (never dragged) must stay null: Number(null) is 0, which would pin it to a corner.
+      const ratio = (value) => (value != null && Number(value) >= 0 && Number(value) <= 1 ? Number(value) : null);
+      leftRatio = ratio(settings?.floatingButtonLeft);
+      topRatio = ratio(settings?.floatingButtonTop);
+      if (settings?.guideDone === true) {
+        guideAnswered = true;
+        markGuide();
+        hideGuide();
+      } else if (guideMarked()) {
+        // Answered on another subdomain or before the stored settings could take it.
+        guideAnswered = false;
+        finishGuide();
+      } else guideAnswered = false;
+      apply();
+    };
+    for (const type of ["fullscreenchange", "webkitfullscreenchange"]) document.addEventListener(type, apply, true);
+    root.addEventListener("resize", apply);
+    // A page that swaps its body (the SPA navigations) drops the button with it.
+    setInterval(apply, 2000);
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply, { once: true });
+    // The button is on by default, so it is there before the stored settings arrive.
+    apply();
+    return { update, apply, finishGuide };
+  })();
+
+  root.addEventListener("message", (event) => {
+    if (event.source !== root || event.data?.channel !== CHANNEL) return;
+    if (event.data.type === "settings") {
+      latestSettings = core.normalizeSettings(event.data.payload);
+      launcher?.update(latestSettings);
+      current?.render(latestSettings);
+    } else if (event.data.type === "stats") {
+      latestStats = event.data.payload;
+    } else if (event.data.type === "debug-notices") {
+      for (const item of [].concat(event.data.payload || [])) {
+        noticeHistory.push({ at: Number(item?.at) || Date.now(), level: String(item?.level || "info"), category: String(item?.category || "other"), title: String(item?.title || ""), detail: String(item?.detail || ""), count: Number(item?.count) || 1 });
+        if (noticeHistory.length > 100) noticeHistory.shift();
+      }
+    } else if (event.data.type === "open-settings" && root.top === root) {
+      // "自定义" in the gear menu: the custom servers are under 高级设置.
+      open({ advanced: true });
+    }
+  });
+  // The userscript manager's menu entry.
+  document.addEventListener("btr-userscript-open-settings", () => { if (root.top === root) toggle(); });
+
+  // Settings sent before this file ran went unheard.
+  post("get-settings");
+
+  root.__BTR_SETTINGS_PANEL__ = Object.freeze({ open, close: () => current?.close(), toggle, isOpen: () => Boolean(current) });
 })(globalThis);
 
 
@@ -2886,7 +4100,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
     if (panel?.parentElement === target) return;
     unsubscribe?.(); panel?.remove();
     panel = document.createElement("div"); panel.id = id;
-    // The servers of the custom mode are picked in the client's settings page; this menu is too small for the list.
+    // The servers of the custom mode are picked in the settings panel; this menu is too small for the list.
     const hint = document.createElement("div"); hint.className = "btr-custom-hint"; hint.hidden = true;
     panel.append(
       group("线程撕裂者 CDN", "mode", [["mainland", "大陆 CDN"], ["overseas", "海外 CDN"], ["custom", "自定义"]]),
@@ -2912,8 +4126,8 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.10.19.1-d1","adapterRevision
       }
       hint.hidden = settings.mode !== "custom";
       hint.textContent = settings.customHosts.length
-        ? `已选 ${settings.customHosts.length} 个服务器，在客户端「设置 → 线程撕裂者」里增减。`
-        : "还没选服务器，暂时按大陆 CDN 下载。请到客户端「设置 → 线程撕裂者」里选择。";
+        ? `已选 ${settings.customHosts.length} 个服务器，点 BTR 悬浮球，在“高级设置”里增减。`
+        : "还没选服务器，暂时按大陆 CDN 下载。点 BTR 悬浮球，在“高级设置”里选择。";
     });
   }
   const observer = new MutationObserver(() => { if (!scheduled) { scheduled = true; requestAnimationFrame(mount); } });

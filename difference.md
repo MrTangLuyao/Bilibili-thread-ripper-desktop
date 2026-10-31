@@ -1,18 +1,18 @@
 # 浏览器版和桌面版的区别
 
-记录时间：2026-10-19。对比的是浏览器版主分支（提交 `8ea1e78`，2026.10.19.1）和桌面版 2026.10.19.1-d1。写这份记录时桌面版 2026.10.19.1-d1 刚在本机构建好，随这个版本一起提交；在那之前桌面版主分支是 2026.10.7.2-d1。
+记录时间：2026-10-31。对比的是浏览器版主分支（提交 `a71d26b`，2026.10.30.1 之后）和桌面版 2026.10.30.1-d1。写这份记录时桌面版 2026.10.30.1-d1 刚在本机构建好，随这个版本一起提交；在那之前桌面版主分支是 2026.10.19.1-d1。
 
 | | 浏览器版 | 桌面版 |
 |---|---|---|
 | 仓库 | [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper) | [Bilibili-thread-ripper-desktop](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) |
-| 版本 | 2026.10.19.1 | 2026.10.19.1-d1 |
+| 版本 | 2026.10.30.1 | 2026.10.30.1-d1 |
 | 运行在哪里 | 油猴脚本（Tampermonkey 等），作用于 B 站网页；2026.9.27.1 起不再发布 Chrome / Edge 扩展 | 官方哔哩哔哩 Windows 客户端（Electron）里 |
 
 两边共用同一套下载内核（怎么拆分、怎么选节点、怎么重试）。不同的是“怎么接到播放器上”：浏览器版可以换掉 B 站的播放内核自己放视频，也可以只接管下载；桌面版只接管下载，播放一直由客户端自己负责。桌面版另外多出一整套安装、更新、卸载和守护程序，浏览器版没有这些。
 
 ## 共用的部分
 
-桌面版 `shared/` 里的 5 个文件与浏览器版 `src/` 里的同名文件逐字相同，改动只在浏览器版做，桌面版原样复制：
+桌面版 `shared/` 里的 6 个文件与浏览器版 `src/` 里的同名文件逐字相同，改动只在浏览器版做，桌面版原样复制：
 
 | 文件 | 作用 |
 |---|---|
@@ -38,7 +38,7 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 | `sidx.js` | 解析分段索引，全接管用 | 同上 |
 | `page-hook.js` | 识别当前视频和分 P、读取 playinfo、接管的开始与结束、合集切换、清晰度和编码跟随、视频统计信息面板、地址过期前换新 | 这些由客户端自己处理，桌面版只需要知道“换视频了”和“客户端拿到了哪些地址” |
 | `native-range-transport.js` | “兼容模式”：B 站自己的播放器继续放视频，只把它的媒体请求拿来多线程下载 | 桌面版的 `src/transport.js` 做的是同一件事，但各写各的，见下一节 |
-| `settings-panel.js` | 页面里的设置面板（2026.10.7.2 起有浅色、深色和自动主题；2026.10.17.1 起高级设置默认折叠、按钮有涟漪效果；2026.10.19.1 起标题下面显示版本号）、播放器齿轮菜单里的入口 | 桌面版的设置放在客户端的系统设置页里，另写了 `settings-view.js`、`player-settings.js` |
+| `bridge.js`（设置面板在桌面版由 `src/panel-bridge.js` 接上） | 在页面里的各个模块和设置之间传设置 | 桌面版设置存在客户端的 `localStorage`，由 `src/settings.js` 负责 |
 | `bridge.js`、`user_scripts/adapter/storage-shim.js` | 在页面里的各个模块和设置之间传设置；设置存在脚本管理器里，所有 B 站子域共用一份；存储为空的脚本管理器从默认设置开始，不导入 `localStorage` 里的副本（2026.10.7.2，以前会导入） | 桌面版的设置存在客户端页面的 `localStorage` |
 | `user_scripts/`、`scripts/build.mjs`、`scripts/release.mjs` | 油猴脚本本身、它的适配层、打包和发版 | 桌面版有自己的打包和发版工具 |
 | `live-core.js`、`live-hook.js` | 直播加速（live.bilibili.com）：屏蔽直播 P2P、直播分片多节点竞速下载、提前缓存播放列表里的分片 | 桌面版只接管客户端的点播播放窗口，不碰客户端的直播 |
@@ -52,7 +52,7 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 | `src/transport.js` | 接管客户端播放窗口里的 `fetch` 和 `XMLHttpRequest`，把带明确 Range 的媒体请求交给共用下载器 |
 | `src/client.js` | 挂到客户端的播放器对象（`biliPlayer`、`nano.createPlayer`）上：拿到播放地址、发现换了视频、显示状态提示；在客户端的 `<video>` 元素上接自动线程数的卡顿和缓冲信号 |
 | `src/settings.js` | 设置的保存（`localStorage`）、多窗口同步、旧设置迁移 |
-| `src/settings-view.js`、`src/player-settings.js` | 系统设置页里的线程撕裂者区域（含自动线程数开关和灰色的“直播加速（敬请期待）”开关）；播放器“更多播放设置”里的 CDN 和线程数（含“自动”） |
+| `src/panel-bridge.js`、`src/player-settings.js` | 把共用的设置面板和悬浮球接到桌面版的设置上，隐藏客户端用不到的项（接管方式、缓冲、加速范围、网页版本），加上“更新”一栏；播放器“更多播放设置”里的 CDN 和线程数（含“自动”） |
 | `src/updates.js`、`src/update-main.cjs` | 检查更新（读 `latest.json`）、确认后安装、卸载 |
 | `src/bootstrap.cjs` | 写进客户端的入口：给客户端加一个普通的 preload，不改官方的更新缓存，不关安全检查 |
 | `launcher/`（`BTR_Desktop.exe`、`BTR_Guard.exe`） | 安装、更新、卸载的独立窗口；监视程序在客户端被官方安装包覆盖后询问是否重新接入。`-silence` 参数让更新、卸载、重新接入不显示窗口（开发和测试用，0.9.4.0-d1 加入）；2026.10.7.2-d1 起普通权限和管理员身份都能运行 |
@@ -110,7 +110,7 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 
 ## 同步共用文件时要做的事
 
-1. 把浏览器版改过的共用文件原样复制到 `shared/`，用上面的命令确认 5 个文件逐字相同；同步 `test/shared.test.cjs`、`test/optimization.test.cjs` 和 `test/auto-concurrency.test.cjs`。
+1. 把浏览器版改过的共用文件原样复制到 `shared/`，用上面的命令确认 6 个文件逐字相同；同步 `test/shared.test.cjs`、`test/optimization.test.cjs` 和 `test/auto-concurrency.test.cjs`。
 2. 重新读一遍 `src/transport.js` 调用下载器的地方。客户端发请求的方式和浏览器版的播放器不一样：很多请求很小、只有一个子块，节点记录按带签名的地址建立，请求经常被取消。浏览器版的测试和基准覆盖不到这些。0.9.3.0 的下载内核原样搬过来时，小请求就全挤到了一个节点上，是靠 `test/transport.test.cjs` 这类测试发现并在适配层修掉的，共用文件没有为桌面版改动。
 3. 改版本号，写 `docs/verification.md`，运行 `npm run release`、`npm test` 和 `node test/browser.cjs`。
 4. 先只装到本机，在真实客户端里测过，再提交推送。

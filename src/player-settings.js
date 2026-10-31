@@ -37,7 +37,7 @@
     if (panel?.parentElement === target) return;
     unsubscribe?.(); panel?.remove();
     panel = document.createElement("div"); panel.id = id;
-    // The servers of the custom mode are picked in the client's settings page; this menu is too small for the list.
+    // The servers of the custom mode are picked in the settings panel; this menu is too small for the list.
     const hint = document.createElement("div"); hint.className = "btr-custom-hint"; hint.hidden = true;
     panel.append(
       group("线程撕裂者 CDN", "mode", [["mainland", "大陆 CDN"], ["overseas", "海外 CDN"], ["custom", "自定义"]]),
@@ -63,8 +63,8 @@
       }
       hint.hidden = settings.mode !== "custom";
       hint.textContent = settings.customHosts.length
-        ? `已选 ${settings.customHosts.length} 个服务器，在客户端「设置 → 线程撕裂者」里增减。`
-        : "还没选服务器，暂时按大陆 CDN 下载。请到客户端「设置 → 线程撕裂者」里选择。";
+        ? `已选 ${settings.customHosts.length} 个服务器，点 BTR 悬浮球，在“高级设置”里增减。`
+        : "还没选服务器，暂时按大陆 CDN 下载。点 BTR 悬浮球，在“高级设置”里选择。";
     });
   }
   const observer = new MutationObserver(() => { if (!scheduled) { scheduled = true; requestAnimationFrame(mount); } });

@@ -73,10 +73,11 @@ test("isolated preload bridges checks but only real user clicks can request inst
   }
   const s=runPreload();assert.deepEqual(s.scripts,["window.BTR=true"]);
   await s.events.message({source:s.window,data:{channel:"__BTR_DESKTOP_UPDATE__",type:"check"}});
-  const target={closest:()=>({id:"btr-desktop-install-update"})};await s.events.click({isTrusted:false,target});assert.deepEqual(s.calls,["btr-desktop:update-check"]);
-  await s.events.click({isTrusted:true,target});assert.deepEqual(s.calls,["btr-desktop:update-check","btr-desktop:update-install"]);
-  const removeTarget={closest:()=>({id:"btr-desktop-uninstall"})};await s.events.click({isTrusted:false,target:removeTarget});assert.equal(s.calls.length,2);
-  await s.events.click({isTrusted:true,target:removeTarget});assert.equal(s.calls.at(-1),"btr-desktop:uninstall");
+  const panelHost={id:"__bilibili_thread_ripper_settings__"},click=(id,isTrusted,inPanel=true)=>({isTrusted,composedPath:()=>[{id},...(inPanel?[panelHost]:[])]});
+  await s.events.click(click("btr-desktop-install-update",false));await s.events.click(click("btr-desktop-install-update",true,false));assert.deepEqual(s.calls,["btr-desktop:update-check"]);
+  await s.events.click(click("btr-desktop-install-update",true));assert.deepEqual(s.calls,["btr-desktop:update-check","btr-desktop:update-install"]);
+  await s.events.click(click("btr-desktop-uninstall",false));assert.equal(s.calls.length,2);
+  await s.events.click(click("btr-desktop-uninstall",true));assert.equal(s.calls.at(-1),"btr-desktop:uninstall");
   assert.equal(s.messages.length,5);assert.equal(runPreload(false).scripts.length,0);assert.equal(runPreload(true,"https://evil.test").scripts.length,0);
   await s.events.message({source:s.window,data:{channel:"__BTR_DESKTOP_UPDATE__",type:"configure-auto",enabled:true}});
   assert.equal(s.calls.at(-1),"btr-desktop:auto-config");
