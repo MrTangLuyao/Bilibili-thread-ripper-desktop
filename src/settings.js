@@ -29,8 +29,8 @@
     return api.getSettings();
   };
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.30.1-d1",
-    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.30.1-d2",
+    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 2,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
     setSettings(patch) { return store(normalize({ ...current, ...patch })); },

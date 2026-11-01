@@ -42,8 +42,11 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     // First use: the guide points at the button until it is answered, then never again.
     await page.locator("#__bilibili_thread_ripper_guide__ p").waitFor();
     assert.equal(await page.locator("#__bilibili_thread_ripper_guide__ p").textContent(), "点这里打开全新 线程撕裂者 设置");
-    assert.equal(await page.locator("#btr-desktop-settings").count(), 0);
-    assert.equal(await page.locator("#btr-desktop-nav").count(), 0);
+    // The client's settings page keeps a short section, also the way back to the button.
+    const section = page.locator("#btr-desktop-settings");
+    await section.waitFor();
+    assert.equal(await page.locator("#btr-desktop-nav").textContent(), "线程撕裂者");
+    assert.deepEqual(await section.locator("label, button:visible").allTextContents(), ["BTR 悬浮窗", "打开 BTR 设置", "自动检查 BTR 更新", "检查 BTR 更新", "卸载 BTR"]);
     const fresh = await page.evaluate(() => __BTR_DESKTOP__.getSettings());
     assert.deepEqual([fresh.mode, fresh.concurrency, fresh.errorNotices, fresh.debugNotices, fresh.autoConcurrency], ["mainland", 8, false, false, true]);
     await page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher").evaluate(node => node.click());
@@ -51,7 +54,7 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(await page.locator("#__bilibili_thread_ripper_guide__").count(), 0);
     await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().guideDone === true);
     assert.match(await page.locator(`${panelSelector} .version`).textContent(), /d\d+/);
-    assert.equal(await page.locator("#btr-desktop-uninstall").isVisible(), true);
+    assert.equal(await page.locator("#__bilibili_thread_ripper_settings__ #btr-desktop-uninstall").isVisible(), true);
     // The client cannot open links: the GitHub button copies the address.
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
     await page.locator("#github-link").click();
@@ -68,13 +71,28 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(await page.locator("#live-enabled").isVisible(), false);
     assert.equal(await page.locator("#block-international").isVisible(), false);
     assert.equal(await page.locator("#btr-desktop-auto-update").isChecked(), true);
-    assert.equal(await page.locator("#btr-desktop-uninstall").textContent(), "卸载 BTR");
-    assert.equal(await page.locator("#btr-desktop-uninstall").isVisible(), false);
+    assert.equal(await page.locator("#__bilibili_thread_ripper_settings__ #btr-desktop-uninstall").textContent(), "卸载 BTR");
+    assert.equal(await page.locator("#__bilibili_thread_ripper_settings__ #btr-desktop-uninstall").isVisible(), false);
     assert.equal(await page.evaluate(()=>__BTR_DESKTOP__.getUpdate().state),"idle");
     await page.locator("#btr-desktop-auto-update").evaluate(node => node.click());
     await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().autoCheckUpdates === false);
     await page.locator("#debug-notices").evaluate(node => node.click());
     await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().debugNotices === true);
+    await closePanel(page);
+    // The floating button switched off in the panel comes back from the client's settings.
+    await page.evaluate(() => __BTR_SETTINGS_PANEL__.open());
+    await page.locator("#floating-button").evaluate(node => node.click());
+    await page.waitForFunction(() => __BTR_DESKTOP__.getSettings().floatingButton === false);
+    await closePanel(page);
+    await page.locator("#__bilibili_thread_ripper_launcher__").waitFor({ state: "detached" });
+    assert.equal(await page.locator('[data-setting="floatingButton"]').isChecked(), false);
+    assert.equal(await page.locator('[data-setting="autoCheckUpdates"]').isChecked(), false);
+    await page.locator("#btr-desktop-open-panel").click();
+    await page.locator(panelSelector).waitFor();
+    assert.equal(await page.locator("#advanced").evaluate(node => node.open), false);
+    await closePanel(page);
+    await page.locator('[data-setting="floatingButton"]').check();
+    await page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher").waitFor();
     await page.reload();
     await page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher").waitFor();
     assert.equal(await page.locator("#__bilibili_thread_ripper_guide__").count(), 0);
@@ -193,27 +211,32 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     await page.evaluate(() => __BTR_SETTINGS_PANEL__.open());
     await page.locator(panelSelector).waitFor();
     if (await page.locator("#advanced-back").isVisible()) await page.locator("#advanced-back").click();
-    await page.locator("#btr-desktop-check-update").waitFor();
+    const inPanel = id => page.locator(`#__bilibili_thread_ripper_settings__ ${id}`);
+    await inPanel("#btr-desktop-check-update").waitFor();
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"available",message:"发现 0.9.1.1-d2",manifest:{version:"0.9.1.1-d2"}}},location.origin));
-    await page.locator("#btr-desktop-install-update").waitFor({state:"visible"});
-    assert.equal(await page.locator("#btr-desktop-install-update").textContent(), "更新到 0.9.1.1-d2");
-    await page.locator("#btr-desktop-check-update").click();
-    assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),true);
+    await inPanel("#btr-desktop-install-update").waitFor({state:"visible"});
+    assert.equal(await inPanel("#btr-desktop-install-update").textContent(), "更新到 0.9.1.1-d2");
+    assert.equal(await page.locator("#btr-desktop-settings #btr-desktop-install-update").textContent(), "更新到 0.9.1.1-d2");
+    await inPanel("#btr-desktop-check-update").click();
+    assert.equal(await inPanel("#btr-desktop-check-update").isDisabled(),true);
+    assert.equal(await page.locator("#btr-desktop-settings #btr-desktop-check-update").isDisabled(),true);
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"error",message:"测试网络失败"}},location.origin));
-    await page.locator("#btr-desktop-check-update:not(:disabled)").waitFor();
-    assert.equal(await page.locator("#btr-desktop-install-update").isVisible(),false);
+    await inPanel("#btr-desktop-check-update:not(:disabled)").waitFor();
+    assert.equal(await inPanel("#btr-desktop-install-update").isVisible(),false);
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"current",message:"当前已是最新版本"}},location.origin));
-    await page.locator('.btr-update-status:has-text("当前已是最新版本")').waitFor();
+    await inPanel('.btr-update-status:has-text("当前已是最新版本")').waitFor();
+    assert.equal(await page.locator("#btr-desktop-settings .btr-update-status").textContent(), "当前已是最新版本");
     console.log("PASS update states: available, checking, error retry and current version");
     for (const state of ["confirming","uninstalling"]) {
       await page.evaluate(state => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state,message:"卸载测试"}},location.origin),state);
-      await page.locator("#btr-desktop-uninstall:disabled").waitFor();
-      assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),true);
-      assert.equal(await page.locator("#btr-desktop-install-update").isVisible(),false);
+      await inPanel("#btr-desktop-uninstall:disabled").waitFor();
+      assert.equal(await inPanel("#btr-desktop-check-update").isDisabled(),true);
+      assert.equal(await inPanel("#btr-desktop-install-update").isVisible(),false);
+      assert.equal(await page.locator("#btr-desktop-settings #btr-desktop-uninstall").isDisabled(),true);
     }
     await page.evaluate(() => window.postMessage({channel:"__BTR_DESKTOP_UPDATE__",type:"result",result:{state:"idle",message:"已取消卸载 BTR"}},location.origin));
-    await page.locator("#btr-desktop-uninstall:not(:disabled)").waitFor();
-    assert.equal(await page.locator("#btr-desktop-check-update").isDisabled(),false);
+    await inPanel("#btr-desktop-uninstall:not(:disabled)").waitFor();
+    assert.equal(await inPanel("#btr-desktop-check-update").isDisabled(),false);
     const images=path.join(root,"test-output");fs.mkdirSync(images,{recursive:true});
     await page.locator("#__bilibili_thread_ripper_settings__ .btr-popup").screenshot({path:path.join(images,"panel-update.png")});
     await closePanel(page);

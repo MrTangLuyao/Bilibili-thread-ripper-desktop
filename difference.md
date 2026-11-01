@@ -1,11 +1,11 @@
 # 浏览器版和桌面版的区别
 
-记录时间：2026-10-31。对比的是浏览器版主分支（提交 `a71d26b`，2026.10.30.1 之后）和桌面版 2026.10.30.1-d1。写这份记录时桌面版 2026.10.30.1-d1 刚在本机构建好，随这个版本一起提交；在那之前桌面版主分支是 2026.10.19.1-d1。
+记录时间：2026-10-31。对比的是浏览器版主分支（提交 `a71d26b`，2026.10.30.1 之后）和桌面版 2026.10.30.1-d2。写这份记录时桌面版 2026.10.30.1-d2 刚在本机构建好，随这个版本一起提交；在那之前桌面版主分支是 2026.10.19.1-d1。
 
 | | 浏览器版 | 桌面版 |
 |---|---|---|
 | 仓库 | [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper) | [Bilibili-thread-ripper-desktop](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) |
-| 版本 | 2026.10.30.1 | 2026.10.30.1-d1 |
+| 版本 | 2026.10.30.1 | 2026.10.30.1-d2 |
 | 运行在哪里 | 油猴脚本（Tampermonkey 等），作用于 B 站网页；2026.9.27.1 起不再发布 Chrome / Edge 扩展 | 官方哔哩哔哩 Windows 客户端（Electron）里 |
 
 两边共用同一套下载内核（怎么拆分、怎么选节点、怎么重试）。不同的是“怎么接到播放器上”：浏览器版可以换掉 B 站的播放内核自己放视频，也可以只接管下载；桌面版只接管下载，播放一直由客户端自己负责。桌面版另外多出一整套安装、更新、卸载和守护程序，浏览器版没有这些。
@@ -52,7 +52,7 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 | `src/transport.js` | 接管客户端播放窗口里的 `fetch` 和 `XMLHttpRequest`，把带明确 Range 的媒体请求交给共用下载器 |
 | `src/client.js` | 挂到客户端的播放器对象（`biliPlayer`、`nano.createPlayer`）上：拿到播放地址、发现换了视频、显示状态提示；在客户端的 `<video>` 元素上接自动线程数的卡顿和缓冲信号 |
 | `src/settings.js` | 设置的保存（`localStorage`）、多窗口同步、旧设置迁移 |
-| `src/panel-bridge.js`、`src/player-settings.js` | 把共用的设置面板和悬浮球接到桌面版的设置上，隐藏客户端用不到的项（接管方式、缓冲、加速范围、网页版本），加上“更新”一栏；播放器“更多播放设置”里的 CDN 和线程数（含“自动”） |
+| `src/panel-bridge.js`、`src/player-settings.js`、`src/settings-view.js` | 把共用的设置面板和悬浮球接到桌面版的设置上，隐藏客户端用不到的项（接管方式、缓冲、加速范围、网页版本），加上“更新”一栏；播放器“更多播放设置”里的 CDN 和线程数（含“自动”）；客户端系统设置里的“线程撕裂者”一栏（悬浮窗开关、打开 BTR 设置、更新和卸载） |
 | `src/updates.js`、`src/update-main.cjs` | 检查更新（读 `latest.json`）、确认后安装、卸载 |
 | `src/bootstrap.cjs` | 写进客户端的入口：给客户端加一个普通的 preload，不改官方的更新缓存，不关安全检查 |
 | `launcher/`（`BTR_Desktop.exe`、`BTR_Guard.exe`） | 安装、更新、卸载的独立窗口；监视程序在客户端被官方安装包覆盖后询问是否重新接入。`-silence` 参数让更新、卸载、重新接入不显示窗口（开发和测试用，0.9.4.0-d1 加入）；2026.10.7.2-d1 起普通权限和管理员身份都能运行 |

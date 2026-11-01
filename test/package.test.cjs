@@ -78,7 +78,9 @@ test("isolated preload bridges checks but only real user clicks can request inst
   await s.events.click(click("btr-desktop-install-update",true));assert.deepEqual(s.calls,["btr-desktop:update-check","btr-desktop:update-install"]);
   await s.events.click(click("btr-desktop-uninstall",false));assert.equal(s.calls.length,2);
   await s.events.click(click("btr-desktop-uninstall",true));assert.equal(s.calls.at(-1),"btr-desktop:uninstall");
-  assert.equal(s.messages.length,5);assert.equal(runPreload(false).scripts.length,0);assert.equal(runPreload(true,"https://evil.test").scripts.length,0);
+  // The same buttons in the section on the client's settings page.
+  await s.events.click({isTrusted:true,composedPath:()=>[{id:"btr-desktop-uninstall"},{id:"btr-desktop-settings"}]});assert.equal(s.calls.length,4);assert.equal(s.calls.at(-1),"btr-desktop:uninstall");
+  assert.equal(s.messages.length,7);assert.equal(runPreload(false).scripts.length,0);assert.equal(runPreload(true,"https://evil.test").scripts.length,0);
   await s.events.message({source:s.window,data:{channel:"__BTR_DESKTOP_UPDATE__",type:"configure-auto",enabled:true}});
   assert.equal(s.calls.at(-1),"btr-desktop:auto-config");
 });
