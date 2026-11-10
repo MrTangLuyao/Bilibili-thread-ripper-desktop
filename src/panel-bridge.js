@@ -4,7 +4,7 @@
   // (shared/settings-panel.js), so there is one panel to maintain. This file is what stands
   // in for its bridge.js: it answers the panel's messages from the desktop settings, leaves
   // out what the client has no use for and adds the block for updates and uninstalling.
-  const api = root.__BTR_DESKTOP__, transport = () => api.transport;
+  const api = root.__BTR_DESKTOP__;
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
   let saveError = () => {};
@@ -39,6 +39,11 @@
       </section>`;
     // On the panel's first page, not under 高级设置: this is how the app is kept up to date.
     panel.querySelector(".view-main").append(block);
+    // 接管方式 as in the browser version, greyed out: the client only has the compatibility
+    // mode (its settings always say "compat", so that choice shows as picked).
+    for (const radio of panel.querySelectorAll('.takeover-select input[name="takeover"]')) radio.disabled = true;
+    panel.querySelector(".takeover-select").setAttribute("aria-disabled", "true");
+    panel.querySelector(".takeover-note").textContent = "桌面版仅支持兼容模式。";
     const find = selector => block.querySelector(selector);
     find("#btr-desktop-auto-update").addEventListener("change", event => saved(() => api.setSettings({ autoCheckUpdates: event.target.checked })));
     // Installing and uninstalling are started by the preload, which only trusts real clicks.
@@ -76,10 +81,11 @@
 
   root.__BTR_PANEL_HOST__ = Object.freeze({
     projectUrl: "https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop",
-    // 接管方式, 缓冲, 加速范围 and 网页版本 are the browser version's: the client plays by itself.
-    hide: [".takeover-select", ".accel-controls", ".site-controls", "#tab-buffer", "#panel-buffer"],
+    // 缓冲, 加速范围 and 网页版本 are the browser version's: the client plays by itself.
+    hide: [".accel-controls", ".site-controls", "#tab-buffer", "#panel-buffer"],
     css: `
       .tabs { grid-template-columns: repeat(3, 1fr); }
+      .takeover-select { opacity: .38; filter: grayscale(1); pointer-events: none; user-select: none; }
       .btr-maintenance { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; margin: 6px 0 8px; padding: 3px; border-radius: 10px; background: var(--bg); }
       .btr-maintenance button { padding: 7px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
       .btr-maintenance button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
@@ -96,23 +102,12 @@
     mount
   });
 
-  // The transport counts bytes; the panel shows a speed.
-  let lastBytes = 0, lastAt = 0, speed = 0;
-  function stats() {
-    const snapshot = transport()?.snapshot() || {}, now = performance.now(), bytes = Number(snapshot.networkBytes) || 0;
-    if (lastAt && now > lastAt) speed = Math.max(0, bytes - lastBytes) * 1000 / (now - lastAt);
-    lastBytes = bytes; lastAt = now;
-    return { activeThreads: Number(snapshot.activeThreads) || 0, totalSpeedBps: speed };
-  }
-
+  // The panel's 运行状态 and 复制诊断信息 are answered by src/page-hook.js, as in the browser.
   api.onSettings(settings => post("settings", settings));
   root.addEventListener("message", event => {
     if (event.source !== root || event.data?.channel !== CHANNEL) return;
     if (event.data.type === "get-settings") post("settings", api.getSettings());
-    else if (event.data.type === "get-stats") post("stats", stats());
     else if (event.data.type === "settings-update") saved(() => api.setSettings(event.data.payload));
     else if (event.data.type === "settings-reset") saved(api.resetSettings);
   });
-  // The panel's diagnostic copy.
-  root.__biliThreadRipperDebug = { report: () => JSON.stringify(api.getStatus?.() || {}) };
 })(globalThis);

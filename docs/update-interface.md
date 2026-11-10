@@ -7,8 +7,8 @@
 ```json
 {
   "schema": 1,
-  "version": "2026.10.30.1-d2",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-2026.10.30.1-d2.zip",
+  "version": "2026.11.10.1-d1",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-2026.11.10.1-d1.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }
@@ -59,15 +59,15 @@ d4 之前 BTR 只认 1.18.0，发现缓存版本号不同就主动不加载。d5
 try{require("./btr-desktop/bootstrap.cjs")}catch(error){console.error("BTR bootstrap:",error&&error.message)}
 ```
 
-BTR 出错只记录错误，官方程序照常启动。入口开头的 BOM 和 `"use strict"` 保持在最前面。页面脚本仍只在 `https://bilipc.bilibili.com` 的 `index.html`、`player.html` 顶层窗口注入，设置界面找不到对应元素就不挂载。同一个播放窗口里加速连续失败 6 次，这个窗口就暂停加速，之后的请求直接交给客户端，重新打开播放窗口会再次尝试。
+BTR 出错只记录错误，官方程序照常启动。入口开头的 BOM 和 `"use strict"` 保持在最前面。页面脚本仍只在 `https://bilipc.bilibili.com` 的 `index.html`、`player.html` 顶层窗口注入，设置界面找不到对应元素就不挂载。播放窗口里用的是网页版的兼容模式：某一段下载失败，就按失败还给客户端的播放器，由它自己重新下载；兼容模式接不上的视频，由客户端自己下载，换视频后再试。
 
 d4 的入口前缀没有 try/catch，d5 检查时会视为需要修复，并从原始备份重新生成补丁。
 
 ## 默认设置和 CDN 停用
 
-从 0.9.1.2 起，默认是大陆 CDN、8 线程，“显示错误”默认关闭。设置保存在 `localStorage` 的 `BTR_Desktop.settings.v1`，其中 `revision` 为 2。读到没有 `revision` 或旧 `revision` 的设置时，只把 CDN、线程数和显示错误改成新的默认值并写回一次，Debug、分类筛选、自动检查更新等其余设置保留。没有保存过设置的新安装直接使用默认值。
+从 0.9.1.2 起，默认是大陆 CDN、8 线程。设置保存在 `localStorage` 的 `BTR_Desktop.settings.v1`，其中 `revision` 为 2。读到没有 `revision` 或旧 `revision` 的设置时，只把 CDN 和线程数改成新的默认值并写回一次，自动检查更新等其余设置保留。2026.11.10.1-d1 起不再有“显示错误”和 Debug，旧设置里的这几项在下次保存时去掉。没有保存过设置的新安装直接使用默认值。
 
-共用的 `cdn-resolver.js` 提供 `createBanList`。下载器每次失败都把这次实际收到的字节数交给它：被取消的请求不算；收到过数据后才中断的不算；同一个节点累计两次一个字节都没收到，就停用这个节点。桌面版每个视频（BV 号加 CID）一份记录，切换视频时清空；浏览器版按页面路由保存，同一视频重新接管也不会清空。停用后，选节点、补块和起播候选都跳过它，已经排队等待的子块在下一次尝试前也会跳过。所有候选都被停用时仍使用原来的节点，避免整个视频没有下载地址。停用时显示一条红色的“已停用这个 CDN 节点”；每次子块失败显示“这一小段没能下载下来”，包含已收到的 KiB 和节点，两者都受“显示错误”控制。桌面版的状态快照 `__BTR_DESKTOP__.getStatus().transport.bannedHosts` 列出当前视频停用的节点。
+共用的 `cdn-resolver.js` 提供 `createBanList`。下载器每次失败都把这次实际收到的字节数交给它：被取消的请求不算；收到过数据后才中断的不算；同一个节点累计两次一个字节都没收到，就停用这个节点。桌面版每个视频（BV 号加 CID）一份记录，切换视频时清空；浏览器版按页面路由保存，同一视频重新接管也不会清空。停用后，选节点、补块和起播候选都跳过它，已经排队等待的子块在下一次尝试前也会跳过。所有候选都被停用时仍使用原来的节点，避免整个视频没有下载地址。停用的节点和每次子块失败都记在“复制诊断信息”里。桌面版的状态快照 `__BTR_DESKTOP__.getStatus().bannedHosts` 列出当前视频停用的节点。
 
 ## 后台监视和重新接入
 

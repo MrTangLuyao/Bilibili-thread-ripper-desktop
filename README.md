@@ -6,7 +6,7 @@
 
 **Bilibili 线程撕裂者的桌面版，适用于官方哔哩哔哩 Windows 客户端**
 
-当前版本 **2026.10.30.1-d2** · 已在官方客户端 **1.19.0** 实测
+当前版本 **2026.11.10.1-d1**，已在官方客户端 **1.19.0** 实测
 
 [![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows-0078d4?style=flat-square)](#-安装) [![网页版](https://img.shields.io/badge/%E7%BD%91%E9%A1%B5%E7%89%88-%E6%B2%B9%E7%8C%B4%E8%84%9A%E6%9C%AC-fb7299?style=flat-square)](https://github.com/MrTangLuyao/Bilibili-thread-ripper) [![Stars](https://img.shields.io/github/stars/MrTangLuyao/Bilibili-thread-ripper-desktop?style=flat-square&color=f5b301)](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop/stargazers) [![许可证](https://img.shields.io/github/license/MrTangLuyao/Bilibili-thread-ripper-desktop?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&style=flat-square&color=3b82f6)](LICENSE)
 
@@ -17,7 +17,7 @@
 </div>
 
 > [!NOTE]
-> 桌面版工作在类似网页版“兼容模式”的方式下：只接管视频下载，播放仍由客户端自己负责，所以效果可能不如网页版，但相比原生依旧提升明显。更多差异请参考 [difference.md](difference.md)。
+> 桌面版使用网页版的“兼容模式”，也只支持这一种：只接管视频下载，播放仍由客户端自己负责，所以效果可能不如网页版，但相比原生依旧提升明显。更多差异请参考 [difference.md](difference.md)。
 
 > [!IMPORTANT]
 > 再次重申：BTR 桌面版的稳定性、速度不如网页版。如果想获得 BTR 的最佳效果，请移步[原版 BTR](https://github.com/MrTangLuyao/Bilibili-thread-ripper)。
@@ -28,7 +28,7 @@
 - **一行命令安装**：在 PowerShell 里运行一行命令，自动找到客户端
 - **客户端里自动更新**：发现新版本会提示，确认后安装并重新打开客户端
 - **不怕官方覆盖安装**：官方安装包覆盖了 BTR 时，后台监视程序会问你要不要重新接入
-- **出问题自动退回**：坏节点自动停用；加速连续失败就交回客户端自己下载，不会卡住视频
+- **出问题自动退回**：坏节点自动停用；某一段加速失败就交回客户端自己重新下载，不会卡住视频
 - **随时一键还原**：设置里点卸载就能恢复官方客户端，不动账号和数据
 
 ## 📦 安装
@@ -65,7 +65,7 @@ irm https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop
 
 | 入口 | 可以调整 |
 | --- | --- |
-| 窗口右下角的 **BTR 悬浮球**（页首左图） | 和网页版一样的设置面板：CDN、线程数、错误提示和 Debug、悬浮球开关、更新和卸载 |
+| 窗口右下角的 **BTR 悬浮球**（页首左图） | 和网页版一样的设置面板：CDN、线程数、复制诊断信息、悬浮球开关、更新和卸载 |
 | 客户端 **设置 → 线程撕裂者** | BTR 悬浮窗开关、打开 BTR 设置、更新和卸载。关掉悬浮窗后从这里打开 |
 | 播放器 **齿轮 → 更多播放设置**（页首右图） | CDN 和线程数 |
 
@@ -73,13 +73,14 @@ irm https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop
 | --- | --- | --- |
 | CDN 模式 | 大陆 CDN | 也可以选海外或自定义 |
 | 线程数 | 8 | 一般推荐 8 到 32，不够流畅再往上加 |
-| 显示错误 | 关 | 红色错误提示默认不显示，需要排查时打开 |
 
-从旧版升级到 0.9.1.2 时，这三项会统一改成新的默认值一次，之后按你的设置保存。
+从旧版升级到 0.9.1.2 时，这两项会统一改成新的默认值一次，之后按你的设置保存。
+
+遇到问题时，在设置面板的 **高级设置 → 功能 → 调试** 里点 **复制诊断信息**，把复制下来的内容贴到 issue 里。
 
 **自定义 CDN**：除了大陆、海外，还可以选“自定义”：在悬浮球的设置面板（高级设置）里勾选已知的服务器，也可以手动添加服务器地址（只接受 B 站自己的视频服务器，最多 32 个）。选了自定义后，BTR 只从你选的服务器下载；一个都没选时按大陆 CDN 下载。播放器菜单里可以切到自定义，服务器列表在设置面板里增减。切换 CDN 或增减服务器不用重新打开视频，从下一段下载开始生效。你选的服务器都下载失败时，和平时一样交回客户端自己下载，不会卡住视频。
 
-**坏节点自动停用**：同一个视频里，某个 CDN 节点两次一点数据都没给（错误提示里显示“已收到 0 KiB”），BTR 就停用这个节点，这个视频接下来不再用它，换视频后恢复。所有节点都被停用时，仍会继续尝试，避免整个视频放不了。如果是 B 站给的某个下载地址一直被服务器拒绝，只停用这个地址，不连累节点；只拿到 akamaized.net 地址的账号也能用多个节点下载。
+**坏节点自动停用**：同一个视频里，某个 CDN 节点两次一点数据都没给，BTR 就停用这个节点，这个视频接下来不再用它，换视频后恢复。所有节点都被停用时，仍会继续尝试，避免整个视频放不了。如果是 B 站给的某个下载地址一直被服务器拒绝，只停用这个地址，不连累节点；只拿到 akamaized.net 地址的账号也能用多个节点下载。
 
 ## 更新
 

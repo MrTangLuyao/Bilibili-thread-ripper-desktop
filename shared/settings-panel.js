@@ -219,30 +219,13 @@
             <div class="block">
               <h2 class="block-title">调试</h2>
               <section class="notice-controls" aria-label="调试">
-                <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
-                <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
-                <fieldset id="debug-filters" class="debug-filters" hidden>
-                  <legend>显示哪些 Debug 消息</legend>
-                  <div class="debug-filter-actions"><button id="debug-select-all" type="button">全选</button><button id="debug-select-none" type="button">全不选</button></div>
-                  <div class="debug-filter-options">
-                    <label><input type="checkbox" data-debug-category="takeover">接管与切换</label>
-                    <label><input type="checkbox" data-debug-category="playback">播放与暂停</label>
-                    <label><input type="checkbox" data-debug-category="download">下载线程</label>
-                    <label><input type="checkbox" data-debug-category="buffer">缓冲与跳转</label>
-                    <label><input type="checkbox" data-debug-category="settings">设置变化</label>
-                    <label><input type="checkbox" data-debug-category="other">其他日志</label>
-                  </div>
-                  <div class="debug-copy">
-                    <button id="debug-copy" type="button">复制诊断信息</button>
-                    <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
-                  </div>
-                  <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
-                  <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
-                </fieldset>
+                <div class="debug-copy">
+                  <button id="debug-copy" type="button">复制诊断信息</button>
+                  <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
+                </div>
+                <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
+                <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
               </section>
-            </div>
-            <div class="block">
-              <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
             </div>
           </div>
           <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
@@ -254,7 +237,10 @@
           </div>
         </div>
       </details>
-    </main>`;
+    </main>
+    <footer class="btr-footer">
+      <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
+    </footer>`;
 
   const PANEL_CSS = `
     .btr-popup {
@@ -287,7 +273,7 @@
     .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
     /* With the master switch off the panel says so, and what only works with BTR on fades out
-       and cannot be used: not 调试 (the notices and the diagnostic copy) or the floating button,
+       and cannot be used: not 调试 (the diagnostic copy) or the floating button,
        which still apply. */
     .disabled-note { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(251, 114, 153, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
     [data-needs-enabled] { transition: opacity .2s ease, filter .2s ease; }
@@ -365,23 +351,14 @@
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
     .accel-controls, .site-controls, .notice-controls, .interface-controls { padding: 5px 16px; border-radius: 12px; background: var(--surface); }
-    .debug-filters { min-width: 0; margin: 9px 0 7px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
-    .debug-filters[hidden] { display: none; }
-    .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
-    .debug-filter-actions { display: flex; gap: 8px; margin-bottom: 12px; }
-    .debug-filter-actions button { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; font-size: 11px; cursor: pointer; }
-    .debug-filter-actions button:hover, .manual-host button:hover { border-color: #fb7299; }
-    .debug-filter-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
-    .debug-filter-options label { display: flex; align-items: center; gap: 7px; color: var(--label); font-size: 12px; cursor: pointer; }
-    .debug-filter-options input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: #fb7299; cursor: pointer; }
-    .debug-filter-actions button:focus-visible, .debug-filter-options input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-    .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    .manual-host button:hover { border-color: #fb7299; }
+    .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
     .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
     .debug-copy button:hover { background: #fb7299; }
     .debug-copy button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
     .debug-copy-status { color: var(--success); font-size: 12px; }
     .debug-copy-status.failed { color: var(--error); }
-    .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .debug-copy-note { margin: 8px 0 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }
     .reset-settings { width: 100%; padding: 11px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
     .reset-settings:hover { background: var(--hover); }
     .reset-settings[data-asking] { color: var(--error); font-weight: 600; }
@@ -390,9 +367,11 @@
     .debug-copy-text[hidden] { display: none; }
     .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
     .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 36px); margin: 0 18px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
+    /* 恢复默认设置 and 关闭 stay at the bottom of every page of the panel, solid for the content
+       scrolling under them. */
+    .btr-footer { position: sticky; bottom: 0; display: grid; gap: 14px; padding: 8px 18px 16px; background: var(--bg); box-shadow: 0 -10px 12px var(--bg); }
+    .btr-close { display: block; width: 100%; margin: 0; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
     .btr-close:hover { background: #565e6c; }
-    /* Solid, for the content scrolling under it. */
     .btr-popup[data-theme="light"] .btr-close { background: #dde1e8; color: #1f2329; }
     .btr-popup[data-theme="light"] .btr-close:hover { background: #d0d5de; }
     .btr-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -428,7 +407,7 @@
     .tabs button:hover { color: var(--text); }
     .tabs button[aria-selected="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
     .tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-    .host-option, .debug-filter-options label { border-radius: 4px; }
+    .host-option { border-radius: 4px; }
     .btr-popup { --ripple: rgba(251, 114, 153, .35); }
     .btr-popup[data-theme="light"] { --ripple: rgba(251, 114, 153, .3); }
     .mode-select input:checked + span, .takeover-select input:checked + span, .switch input:checked + span, .host-form button, .debug-copy button:hover { --ripple: rgba(255, 255, 255, .35); }
@@ -477,42 +456,105 @@
   // bridge.js sends the stored settings when they load or change, and the page its stats.
   let latestSettings = null;
   let latestStats = null;
-  // The debug notices shown on this page, newest last, for the diagnostic copy.
-  const noticeHistory = [];
 
-  // Everything needed to look into a report, as text to paste into an issue. The page's own
-  // reports already leave out download addresses and account data; any address that is left
-  // is cut down to its host and path, so no signature or token goes along.
+  // Everything needed to look into a report, as English text to paste into an issue. This only
+  // gathers the facts; diagnostic-report.js lays them out (and translates what is left in
+  // Chinese, such as BTR's own error messages). The facts carry no cookie values, no account
+  // and no download address: only the derived site choices, whether someone is signed in, and
+  // node names. A source that cannot be read leaves its part empty and says why in readErrors.
   function diagnostics() {
-    const safely = (read) => { try { return read(); } catch (error) { return `读取失败：${String(error?.message || error)}`; } };
-    const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
-    const sections = [
-      ["环境", {
-        BTR: "__BTR_VERSION__",
-        渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
-        同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
-        脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
-        浏览器: navigator.userAgent,
-        页面: `${location.origin}${location.pathname}`,
-        时间: new Date().toISOString(),
-        语言: navigator.language,
-        窗口: `${root.innerWidth}x${root.innerHeight}`
-      }],
-      ["设置", latestSettings || "设置还没加载"]
-    ];
-    const video = root.__biliThreadRipperDebug;
-    if (typeof video?.report === "function") sections.push(["视频接管", safely(() => parse(video.report()))]);
-    const auto = root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency;
-    if (typeof auto?.status === "function") sections.push(["自动线程数", safely(() => auto.status())]);
-    // The live player often sits in a live.bilibili.com iframe, where its module runs.
-    const liveModules = [root, ...[...document.querySelectorAll("iframe")].map((frame) => safely(() => frame.contentWindow))]
-      .map((view) => safely(() => view?.__biliThreadRipperLiveDebug)).filter((api) => api && typeof api.getStats === "function");
-    liveModules.forEach((api, index) => sections.push([liveModules.length > 1 ? `直播模块 ${index + 1}` : "直播模块", safely(() => ({ stats: api.getStats(), context: api.getContext?.() }))]));
-    sections.push(["最近的 Debug 提示", noticeHistory.length
-      ? noticeHistory.map((item) => `${new Date(item.at).toISOString().slice(11, 19)} [${item.level}/${item.category}] ${item.title}${item.count > 1 ? ` ×${item.count}` : ""}${item.detail ? ` — ${item.detail}` : ""}`).join("\n")
-      : "（还没有。打开 Debug 模式以后显示过的提示才会记在这里）"]);
-    const text = sections.map(([title, value]) => `## ${title}\n${typeof value === "string" ? value : JSON.stringify(value, null, 1)}`).join("\n\n");
-    return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
+    const readErrors = [];
+    const errorText = (error) => String(error?.message || error?.name || error || "unknown error").slice(0, 160);
+    const read = (name, fact, fallback = null) => {
+      try { return fact(); } catch (error) {
+        readErrors.push(`${name}: ${errorText(error)}`);
+        return fallback;
+      }
+    };
+    const cookie = (name) => {
+      const value = (new RegExp(`(?:^|;\\s*)${name}=([^;]*)`).exec(document.cookie) || [])[1];
+      if (value === undefined) return undefined;
+      try { return decodeURIComponent(value); } catch (_error) { return value; }
+    };
+    const snapshot = {
+      capturedAt: Date.now(),
+      timeOrigin: performance.timeOrigin,
+      now: performance.now(),
+      btr: read("btr", () => ({
+        version: "__BTR_VERSION__",
+        channel: SCRIPT_CHANNEL,
+        otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
+        scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
+        host: hostApp ? "desktop" : "userscript"
+      })),
+      env: read("env", () => ({ userAgent: navigator.userAgent, language: navigator.language, viewport: `${root.innerWidth}x${root.innerHeight}`, page: `${location.origin}${location.pathname}` })),
+      settings: latestSettings ? { ...latestSettings } : null,
+      // Which site Bilibili shows and why (#68). The site cookies only as the choices they
+      // stand for; signed in or not, never who.
+      site: read("site", () => {
+        const marks = document.documentElement?.dataset || {};
+        const userSite = String(cookie("user_site") ?? "").toUpperCase();
+        let accountSites = null;
+        try {
+          const sites = JSON.parse(cookie("default_sites") ?? "null");
+          if (Array.isArray(sites)) accountSites = sites.map((item) => (["CN", "OVERSEAS"].includes(String(item).toUpperCase()) ? String(item).toUpperCase() : "other"));
+        } catch (_error) {}
+        const lang = cookie("lang") ?? "";
+        return {
+          international: Boolean(root.__BTR_BILIBILI_SITE__?.domesticAddress(location.href)),
+          signedIn: /(?:^|;\s*)DedeUserID=/.test(document.cookie),
+          userSite: ["", "CN", "OVERSEAS"].includes(userSite) ? userSite : "other",
+          accountSites,
+          lang: /^[A-Za-z]{1,8}(?:[-_][A-Za-z0-9]{1,8}){0,3}$/.test(lang) || !lang ? lang : "other",
+          // bridge.js marks the page once it watches for the trips to the international site.
+          guard: marks.btrSiteGuard === "on" ? "on" : typeof root.navigation?.addEventListener === "function" ? "off" : "unsupported",
+          redirectsBlocked: Number(marks.btrSiteRedirectsBlocked) || 0,
+          gaveUp: marks.btrSiteGaveUp === "true"
+        };
+      }),
+      // The video takeover runs on the www and m pages only (page-hook.js).
+      video: read("video", () => {
+        const api = root.__biliThreadRipperDebug;
+        return typeof api?.report === "function" ? JSON.parse(api.report()) : null;
+      }),
+      stats: read("stats", () => root.__biliThreadRipperDebug?.getStats?.() ?? null),
+      autoThreads: read("autoThreads", () => root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency?.status?.() ?? null),
+      media: read("media", () => root.__BTR_RUNTIME_NOTICES__?.history?.() ?? [], []),
+      live: read("live", () => {
+        // The live player often sits in a live.bilibili.com iframe, where its module runs with
+        // its own clock. Another site's frame cannot be read, and is no module of ours.
+        const modules = [];
+        const views = [root];
+        for (const frame of document.querySelectorAll("iframe")) {
+          try { if (frame.contentWindow) views.push(frame.contentWindow); } catch (_error) {}
+        }
+        let frames = 0;
+        for (const view of views) {
+          let api = null;
+          try { api = view.__biliThreadRipperLiveDebug; } catch (_error) {}
+          if (!api || typeof api.getStats !== "function") continue;
+          const frame = view === root ? "top" : `iframe ${++frames}`;
+          read(`live ${frame}`, () => modules.push({
+            frame,
+            timeOriginDelta: Math.round((Number(view.performance?.timeOrigin) || performance.timeOrigin) - performance.timeOrigin),
+            stats: api.getStats(),
+            context: api.getContext?.() ?? null,
+            events: api.getEvents?.() ?? []
+          }));
+        }
+        return modules;
+      }, []),
+      readErrors
+    };
+    try {
+      const formatter = root.__BTR_DIAGNOSTIC_REPORT__;
+      if (typeof formatter?.render !== "function") throw new Error("the formatter is not loaded");
+      return String(formatter.render(snapshot));
+    } catch (error) {
+      // The facts as they are, still without any address's query or text in Chinese.
+      const text = `BTR diagnostics: formatter failed: ${errorText(error)}\n${JSON.stringify(snapshot, null, 1)}`;
+      return text.replace(/((?:https?:)?\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1").replace(/[^\x00-\x7f]/g, "?");
+    }
   }
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
 
@@ -546,7 +588,7 @@
     closeButton.type = "button";
     closeButton.className = "btr-close";
     closeButton.textContent = "关闭";
-    panel.append(closeButton);
+    panel.querySelector(".btr-footer").append(closeButton);
     shadow.append(style, backdrop, panel);
 
     const $ = (id) => shadow.getElementById(id);
@@ -635,7 +677,7 @@
     panel.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !(event.target instanceof Element)) return;
       const target = event.target.closest(".auto-row, .accel-row, .notice-row")
-        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option, .debug-filter-options label");
+        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option");
       if (!target || target.matches(":disabled")) return;
       ripple(target.matches(".switch, .mode-select label, .takeover-select label") ? target.querySelector("span") : target, event);
     });
@@ -663,15 +705,11 @@
     const bufferValue = $("buffer-value");
     const bufferFill = $("buffer-fill");
     const secondaryBuffer = $("secondary-buffer");
-    const errorNotices = $("error-notices");
-    const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
     const episodeEnabled = $("episode-enabled");
     const blockInternational = $("block-international");
     const floatingButton = $("floating-button");
-    const debugFilters = $("debug-filters");
     const resetSettings = $("reset-settings");
-    const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
     const customSection = $("custom-hosts");
     const hostInput = $("host-input");
     const hostError = $("host-error");
@@ -769,13 +807,8 @@
       episodeEnabled.checked = settings.episodeEnabled !== false;
       blockInternational.checked = settings.blockInternational === true;
       floatingButton.checked = settings.floatingButton !== false;
-      errorNotices.checked = settings.errorNotices;
-      debugNotices.checked = settings.debugNotices;
-      debugFilters.hidden = !settings.debugNotices;
-      for (const input of debugCategoryInputs) input.checked = settings.debugCategories[input.dataset.debugCategory] !== false;
     }
 
-    const saveDebugCategories = () => save({ debugCategories: Object.fromEntries(debugCategoryInputs.map((input) => [input.dataset.debugCategory, input.checked])) });
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
     // Each click goes on to the next choice: from 自动 to the colors the system is not showing,
     // then to the ones it is (now kept by hand), then back to 自动.
@@ -861,18 +894,11 @@
       resetAsked = root.setTimeout(stopAsking, 4000);
     });
     resetSettings.addEventListener("blur", stopAsking);
-    errorNotices.addEventListener("change", () => save({ errorNotices: errorNotices.checked }));
-    debugNotices.addEventListener("change", () => {
-      debugFilters.hidden = !debugNotices.checked;
-      save({ debugNotices: debugNotices.checked });
-    });
-    for (const input of debugCategoryInputs) input.addEventListener("change", saveDebugCategories);
-    $("debug-select-all").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = true; saveDebugCategories(); });
-    $("debug-select-none").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = false; saveDebugCategories(); });
     const copyStatus = $("debug-copy-status");
     const copyText = $("debug-copy-text");
-    let copyStatusTimer = null;
-    $("debug-copy").addEventListener("click", async () => {
+    const copyButton = $("debug-copy");
+    let copyDoneTimer = 0;
+    copyButton.addEventListener("click", async () => {
       const text = diagnostics();
       let copied = false;
       try { await navigator.clipboard.writeText(text); copied = true; } catch (_error) {}
@@ -884,10 +910,15 @@
         copyText.select();
         try { copied = document.execCommand("copy"); } catch (_error) {}
       }
+      // Done, the button says so in place for a moment, keeping its width; otherwise the note
+      // next to it points to the text to copy by hand.
+      root.clearTimeout(copyDoneTimer);
       copyStatus.classList.toggle("failed", !copied);
-      copyStatus.textContent = copied ? "已复制" : "没能自动复制，请手动复制下面的内容";
-      clearTimeout(copyStatusTimer);
-      if (copied) copyStatusTimer = setTimeout(() => { copyStatus.textContent = ""; }, 2500);
+      copyStatus.textContent = copied ? "" : "没能自动复制，请手动复制下面的内容";
+      if (!copied) return;
+      if (!copyButton.style.minWidth) copyButton.style.minWidth = `${copyButton.offsetWidth}px`;
+      copyButton.textContent = "已复制";
+      copyDoneTimer = root.setTimeout(() => { copyButton.textContent = "复制诊断信息"; }, 2500);
     });
 
     // Keys typed into the panel belong to it. The shadow root hides the input from the page,
@@ -1224,11 +1255,6 @@
       current?.render(latestSettings);
     } else if (event.data.type === "stats") {
       latestStats = event.data.payload;
-    } else if (event.data.type === "debug-notices") {
-      for (const item of [].concat(event.data.payload || [])) {
-        noticeHistory.push({ at: Number(item?.at) || Date.now(), level: String(item?.level || "info"), category: String(item?.category || "other"), title: String(item?.title || ""), detail: String(item?.detail || ""), count: Number(item?.count) || 1 });
-        if (noticeHistory.length > 100) noticeHistory.shift();
-      }
     } else if (event.data.type === "open-settings" && root.top === root) {
       // "自定义" in the gear menu: the custom servers are under 高级设置.
       open({ advanced: true });

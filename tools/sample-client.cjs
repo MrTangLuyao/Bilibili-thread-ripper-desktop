@@ -15,5 +15,5 @@ const { evaluate } = require("./inspect-client.cjs");
   }
   const dir = path.resolve(__dirname, "../test-output"); fs.mkdirSync(dir, {recursive:true});
   fs.writeFileSync(path.join(dir, `${label}.json`), JSON.stringify(samples, null, 2));
-  console.log(JSON.stringify({label, count, first:samples[0], last:samples.at(-1), routes:[...new Set(samples.map(s=>s.transport?.route))], errors:samples.filter(s=>s.playback?.error).length, lowReady:samples.filter(s=>s.playback && s.playback.readyState<3).length}));
+  console.log(JSON.stringify({label, count, first:samples[0], last:samples.at(-1), routes:[...new Set(samples.map(s=>s.route))], errors:samples.filter(s=>s.playback?.error).length, lowReady:samples.filter(s=>s.playback && s.playback.readyState<3).length}));
 })().catch(error => { console.error(error.message); process.exitCode = 1; });

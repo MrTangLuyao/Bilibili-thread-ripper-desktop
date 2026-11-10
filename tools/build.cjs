@@ -2,8 +2,8 @@
 const fs = require("node:fs"), path = require("node:path");
 const { sha } = require("./asar.cjs");
 const root = path.resolve(__dirname, "..");
-const shared = ["range-core.js", "cdn-resolver.js", "idm-downloader.js", "runtime-notices.js", "notification-view.js"];
-const own = ["settings.js", "transport.js", "client.js", "updates.js", "panel-bridge.js"];
+const shared = ["range-core.js", "cdn-resolver.js", "idm-downloader.js", "native-range-transport.js", "runtime-notices.js", "diagnostic-report.js"];
+const own = ["settings.js", "page-hook.js", "updates.js", "panel-bridge.js"];
 // The panel reads what panel-bridge.js set up, so it comes after it.
 const files = [...shared.map(x => `shared/${x}`), ...own.map(x => `src/${x}`), "shared/settings-panel.js", "src/player-settings.js", "src/settings-view.js"];
 const config = JSON.parse(fs.readFileSync(path.join(root, "desktop.json")));

@@ -2,17 +2,18 @@
   "use strict";
   if (root.__BTR_DESKTOP__) return;
   const KEY = "BTR_Desktop.settings.v1";
-  const categories = { takeover: "接管与切换", playback: "播放与暂停", download: "下载线程", buffer: "缓冲与跳转", settings: "设置变化", other: "其他日志" };
   const listeners = new Set();
-  // 0.9.1.2 moves everyone once to mainland CDN, 8 threads and hidden error notices.
-  const REVISION = 2, UPGRADE = { mode: "mainland", concurrency: 8, errorNotices: false };
+  // 0.9.1.2 moves everyone once to mainland CDN and 8 threads.
+  const REVISION = 2, UPGRADE = { mode: "mainland", concurrency: 8 };
   const normalize = value => {
     const s = root.__BILI_RANGE_CORE__.normalizeSettings(value || {});
     // mode "custom" uses only the servers in customHosts; the shared core keeps Bilibili's
     // video servers and drops anything else.
     // 自动线程数 is on unless switched off, as in the browser version; concurrency is then only
     // the manual choice, used again when it is switched off.
-    return { enabled: s.enabled, autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, debugNotices: s.debugNotices, errorNotices: s.errorNotices, debugCategories: s.debugCategories, theme: s.theme, floatingButton: s.floatingButton, floatingButtonLeft: s.floatingButtonLeft, floatingButtonTop: s.floatingButtonTop, guideDone: s.guideDone, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
+    // The client only has the browser version's compatibility mode (src/page-hook.js): the
+    // panel shows 接管方式 with it chosen and greyed out.
+    return { enabled: s.enabled, takeover: "compat", autoConcurrency: value?.autoConcurrency !== false, concurrency: s.concurrency, mode: s.mode, customHosts: s.customHosts, theme: s.theme, floatingButton: s.floatingButton, floatingButtonLeft: s.floatingButtonLeft, floatingButtonTop: s.floatingButtonTop, guideDone: s.guideDone, autoCheckUpdates: value?.autoCheckUpdates !== false, revision: REVISION };
   };
   let current;
   try {
@@ -21,7 +22,7 @@
     current = normalize(outdated ? { ...saved, ...UPGRADE } : saved);
     if (outdated) localStorage.setItem(KEY, JSON.stringify(current));
   } catch (_) { current = normalize({}); }
-  const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
+  const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice() }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const store = next => {
     localStorage.setItem(KEY, JSON.stringify(next)); // Failure must not pretend to save.
@@ -29,10 +30,9 @@
     return api.getSettings();
   };
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.10.30.1-d2",
-    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 2,
-    categories,
-    getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.11.10.1-d1",
+    adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
+    getSettings: () => ({ ...current, customHosts: current.customHosts.slice() }),
     setSettings(patch) { return store(normalize({ ...current, ...patch })); },
     resetSettings() { return store(normalize({})); },
     onSettings(fn) { listeners.add(fn); fn(api.getSettings()); return () => listeners.delete(fn); },
