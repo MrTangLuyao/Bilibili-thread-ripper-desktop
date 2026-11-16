@@ -70,6 +70,8 @@
   // per kind and per node for the diagnostic copy.
   let transferSequence = 1;
   const transfers = new Map();
+  // Every byte downloaded, by the node it came from, for BTR 统计信息 (shared/stats-panel.js).
+  const receivedByHost = new Map();
   const downloads = {
     byKind: Object.fromEntries(["video", "audio", "meta"].map(kind => [kind, { started: 0, ok: 0, failed: 0, cancelled: 0, bytes: 0 }])),
     cancelReasons: {}, hosts: {}, lastBytesAt: null
@@ -118,6 +120,7 @@
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
       item.loaded += bytes; item.sampleBytes += bytes; item.lastByteAt = now;
+      receivedByHost.set(item.host, (receivedByHost.get(item.host) || 0) + bytes);
       const elapsed = Math.max(1, now - item.sampleAt);
       if (elapsed >= 200) { item.bps = item.sampleBytes * 1000 / elapsed; item.sampleAt = now; item.sampleBytes = 0; }
       else item.bps = item.loaded * 1000 / Math.max(1, now - item.startedAt);
@@ -155,6 +158,19 @@
   };
   // The panel's 运行状态 asks for these while it is open.
   const publish = () => root.postMessage({ channel: CHANNEL, type: "stats", payload: getStats() }, "*");
+
+  // BTR 统计信息 (shared/stats-panel.js) shows what BTR is doing with the video, over the
+  // client's player like the client's own 视频统计信息. This is what it reads, once a second
+  // while it is open; nothing outside the player window or while BTR is switched off. The
+  // client only has the compatibility mode.
+  root.__BILI_STATS_PANEL__?.install(() => {
+    if (!inPlayer || !settings.enabled) return null;
+    updateTransferStats();
+    let debug = {}, frames = null;
+    try { debug = transport?.getDebug?.() || {}; } catch (_) {}
+    try { frames = currentVideo()?.getVideoPlaybackQuality?.() || null; } catch (_) {}
+    return { route: transportRoute || route, takeover: transport ? "compat" : "", playing: Boolean(transport?.transportActive), stats, settings, received: receivedByHost, debug, frames };
+  });
 
   // 自动线程数 (the controller lives in the shared idm-downloader.js). The client's own video
   // element tells it what the browser version's full takeover tells it there: a stall once

@@ -336,6 +336,41 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     const notAscii = copied.split("\n").find(line => /[^\x00-\x7f]/.test(line));
     assert.equal(notAscii, undefined, `the copy is not plain English text: ${notAscii}`);
     console.log("PASS 运行状态 and 复制诊断信息: the browser version's report, in English, engine compat, host desktop");
+    // BTR 统计信息 is the browser version's panel (shared/stats-panel.js). The client's player
+    // has the web player's container and menu of a right click: the entry is added to that
+    // menu, a press on it opens the panel over the player, and 运行状态 in the settings panel
+    // has its arrow while there is a player.
+    const statistics = await page.evaluate(async () => {
+      const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const box = document.createElement("div");
+      box.className = "bpx-player-container";
+      box.style.cssText = "position:relative;width:960px;height:540px";
+      box.innerHTML = '<div class="bpx-player-video-area" style="position:absolute;inset:0"></div><ul class="bpx-player-contextmenu" style="position:absolute;top:100px;left:100px"><li>视频统计信息</li></ul>';
+      document.body.append(box);
+      const available = __BILI_STATS_PANEL__.available();
+      box.querySelector(".bpx-player-video-area").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      await wait(200);
+      const entry = box.querySelector("[data-btr-stats]");
+      const entries = [...box.querySelectorAll(".bpx-player-contextmenu li")].map(item => item.textContent);
+      entry?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      await wait(1300);
+      const host = document.getElementById("__bilibili_thread_ripper_stats__");
+      const rows = host ? Object.fromEntries([...host.shadowRoot.querySelectorAll(".row")].filter(row => !row.hidden && row.querySelector(".name").textContent)
+        .map(row => [row.querySelector(".name").textContent.replace(":", ""), row.querySelector(".text").textContent])) : null;
+      const parent = host?.parentElement.className;
+      host?.shadowRoot.querySelector(".close").click();
+      const closed = !document.getElementById("__bilibili_thread_ripper_stats__");
+      box.remove();
+      return { available, entries, rows, parent, closed, gone: __BILI_STATS_PANEL__.available() };
+    });
+    assert.deepEqual(statistics.entries, ["视频统计信息", "BTR 统计信息"]);
+    assert.equal(statistics.parent, "bpx-player-video-area");
+    assert.equal(statistics.rows["接管方式"], "兼容模式", JSON.stringify(statistics.rows));
+    assert.match(statistics.rows["下载速度"], /^\d+(\.\d)? [KM]B\/s$/);
+    assert.match(statistics.rows["加速"], /^\d+ 次$/);
+    assert.match(statistics.rows["线程"], /^\d+( \/ \d+)?$/);
+    assert.deepEqual([statistics.available, statistics.closed, statistics.gone], [true, true, false]);
+    console.log("PASS BTR 统计信息: the entry in the menu of a right click opens the shared panel over the client's player, in the compatibility mode");
     // Another video cancels what the old one was still downloading, without a stale delivery.
     const abort = await page.evaluate(async () => {
       const promise = fetch("https://upos-sz-mirrorali.bilivideo.com/upgcxcode/slow.m4s", { headers: { Range: "bytes=0-1048575" } }).then(() => "stale", e => e.name);

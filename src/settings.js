@@ -30,7 +30,7 @@
     return api.getSettings();
   };
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.11.10.1-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.11.15.1-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice() }),
     setSettings(patch) { return store(normalize({ ...current, ...patch })); },

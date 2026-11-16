@@ -26,16 +26,23 @@
   function mount(panel) {
     const block = document.createElement("div");
     block.className = "block btr-update";
+    // One row of the panel's lists (shared/settings-panel.js): the name, its switch, and
+    // under them what belongs to it.
     block.innerHTML = `<h2 class="block-title">更新</h2>
-      <section class="notice-controls" aria-label="更新">
-        <label class="notice-row" for="btr-desktop-auto-update"><span class="row-text">自动检查 BTR 更新</span><span class="switch"><input id="btr-desktop-auto-update" type="checkbox" aria-label="自动检查 BTR 更新"><span></span></span></label>
-        <div class="btr-maintenance">
-          <button id="btr-desktop-install-update" type="button" hidden>安装更新</button>
-          <button id="btr-desktop-check-update" type="button">检查 BTR 更新</button>
-          <button id="btr-desktop-uninstall" type="button">卸载 BTR</button>
+      <section class="list" aria-label="更新">
+        <div class="row">
+          <div class="row-line">
+            <label class="row-name" for="btr-desktop-auto-update">自动检查 BTR 更新</label>
+            <label class="switch"><input id="btr-desktop-auto-update" type="checkbox"><span></span></label>
+          </div>
+          <div class="btr-maintenance">
+            <button id="btr-desktop-install-update" type="button" hidden>安装更新</button>
+            <button id="btr-desktop-check-update" type="button">检查 BTR 更新</button>
+            <button id="btr-desktop-uninstall" type="button">卸载 BTR</button>
+          </div>
+          <p class="btr-update-status" role="status"></p>
+          <p class="btr-save-error" role="status"></p>
         </div>
-        <p class="btr-update-status" role="status"></p>
-        <p class="btr-save-error" role="status"></p>
       </section>`;
     // On the panel's first page, not under 高级设置: this is how the app is kept up to date.
     panel.querySelector(".view-main").append(block);
@@ -81,12 +88,13 @@
 
   root.__BTR_PANEL_HOST__ = Object.freeze({
     projectUrl: "https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop",
-    // 缓冲, 加速范围 and 网页版本 are the browser version's: the client plays by itself.
-    hide: [".accel-controls", ".site-controls", "#tab-buffer", "#panel-buffer"],
+    // 缓冲, 加速范围, 自动清晰度 and 网页版本 are the browser version's: the client plays by
+    // itself.
+    hide: [".accel-controls", ".quality-controls", ".site-controls", "#tab-buffer", "#panel-buffer"],
     css: `
       .tabs { grid-template-columns: repeat(3, 1fr); }
       .takeover-select { opacity: .38; filter: grayscale(1); pointer-events: none; user-select: none; }
-      .btr-maintenance { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; margin: 6px 0 8px; padding: 3px; border-radius: 10px; background: var(--bg); }
+      .btr-maintenance { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; margin: 10px 0 0; padding: 3px; border-radius: 10px; background: var(--bg); }
       .btr-maintenance button { padding: 7px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
       .btr-maintenance button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
       .btr-maintenance button:disabled { opacity: .55; cursor: default; }
@@ -95,7 +103,7 @@
       #btr-desktop-install-update[hidden] { display: none; }
       #btr-desktop-install-update:hover:not(:disabled) { background: #fb7299; color: #fff; }
       #btr-desktop-uninstall:hover:not(:disabled) { color: var(--error); }
-      .btr-update-status, .btr-save-error { margin: 0 0 8px 2px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+      .btr-update-status, .btr-save-error { margin: 8px 0 0 2px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
       .btr-save-error { color: var(--error); }
       .btr-update-status:empty, .btr-save-error:empty { display: none; }
     `,

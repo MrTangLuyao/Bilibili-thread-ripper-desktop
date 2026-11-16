@@ -1,11 +1,11 @@
 # 浏览器版和桌面版的区别
 
-记录时间：2026-11-11。对比的是浏览器版 2026.11.10.1（提交 `129dac7`）和桌面版 2026.11.10.1-d1。
+记录时间：2026-11-16。对比的是浏览器版 2026.11.15.1（提交 `ef014b2`）和桌面版 2026.11.15.1-d1。
 
 | | 浏览器版 | 桌面版 |
 |---|---|---|
 | 仓库 | [Bilibili-thread-ripper](https://github.com/MrTangLuyao/Bilibili-thread-ripper) | [Bilibili-thread-ripper-desktop](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) |
-| 版本 | 2026.11.10.1 | 2026.11.10.1-d1 |
+| 版本 | 2026.11.15.1 | 2026.11.15.1-d1 |
 | 运行在哪里 | 油猴脚本（Tampermonkey 等），作用于 B 站网页；2026.9.27.1 起不再发布 Chrome / Edge 扩展 | 官方哔哩哔哩 Windows 客户端（Electron）里 |
 
 两边共用同一套下载内核（怎么拆分、怎么选节点、怎么重试），也共用“兼容模式”的代码（`native-range-transport.js`）。不同的是“怎么接到播放器上”：浏览器版可以换掉 B 站的播放内核自己放视频（全接管），也可以用兼容模式只接管下载；桌面版只有兼容模式，播放一直由客户端自己负责。桌面版另外多出一整套安装、更新、卸载和守护程序，浏览器版没有这些。
@@ -14,7 +14,7 @@
 
 ## 共用的部分
 
-桌面版 `shared/` 里的 7 个文件与浏览器版 `src/` 里的同名文件逐字相同，改动只在浏览器版做，桌面版原样复制：
+桌面版 `shared/` 里的 8 个文件与浏览器版 `src/` 里的同名文件逐字相同，改动只在浏览器版做，桌面版原样复制：
 
 | 文件 | 作用 |
 |---|---|
@@ -25,6 +25,7 @@
 | `runtime-notices.js` | 记录 `<video>` 元素的播放事件，给诊断信息用（2026.11.10.1 起只剩这个作用，屏幕上的提示和 Debug 开关都删了） |
 | `diagnostic-report.js` | 把诊断信息排成英文文本（2026.11.10.1） |
 | `settings-panel.js` | 设置面板和悬浮球，桌面版由 `src/panel-bridge.js` 接上 |
+| `stats-panel.js` | BTR 统计信息：浮在播放器上的统计面板，样式照播放器自带的统计信息；播放器右键菜单里的“BTR 统计信息”或设置面板的“运行状态”打开（2026.11.15.1）。客户端的播放器和网页播放器用的是同一套容器和右键菜单，所以两边代码相同；数据由各自的 `page-hook.js` 提供 |
 
 两边各有一份相同的测试守着这部分：浏览器版的 `dev/shared-core-test.js`、`dev/optimization-test.js`、`dev/auto-concurrency-test.js`，对应桌面版的 `test/shared.test.cjs`（只有第二行注释不同）、`test/optimization.test.cjs`、`test/auto-concurrency.test.cjs`。例外（0.9.4.0-d1）：桌面版的 `test/auto-concurrency.test.cjs` 最后一项的计时改得更稳，浏览器版这一处还没同步。
 
@@ -40,20 +41,20 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 |---|---|---|
 | `native-mse-player.js` | “全接管”模式的播放内核：自己建 MediaSource、读分段索引、管缓冲、拖动、换清晰度和编码，界面仍是 B 站的 | 桌面版不换客户端的播放内核 |
 | `sidx.js` | 解析分段索引，全接管用 | 同上 |
-| `page-hook.js` | 识别当前视频和分 P、读取 playinfo、接管的开始与结束、合集切换、清晰度和编码跟随、视频统计信息面板、地址过期前换新 | 这些由客户端自己处理。桌面版有自己的 `src/page-hook.js`，只做兼容模式用得到的那部分，见下一节 |
+| `page-hook.js` | 识别当前视频和分 P、读取 playinfo、接管的开始与结束、合集切换、清晰度和编码跟随、地址过期前换新 | 这些由客户端自己处理。桌面版有自己的 `src/page-hook.js`，只做兼容模式用得到的那部分，见下一节 |
 | `bilibili-site.js` | 阻止使用国际版 | 客户端没有国际版网页 |
 | `bridge.js`（设置面板在桌面版由 `src/panel-bridge.js` 接上） | 在页面里的各个模块和设置之间传设置 | 桌面版设置存在客户端的 `localStorage`，由 `src/settings.js` 负责 |
 | `bridge.js`、`user_scripts/adapter/storage-shim.js` | 在页面里的各个模块和设置之间传设置；设置存在脚本管理器里，所有 B 站子域共用一份；存储为空的脚本管理器从默认设置开始，不导入 `localStorage` 里的副本（2026.10.7.2，以前会导入） | 桌面版的设置存在客户端页面的 `localStorage` |
 | `user_scripts/`、`scripts/build.mjs`、`scripts/release.mjs` | 油猴脚本本身、它的适配层、打包和发版 | 桌面版有自己的打包和发版工具 |
 | `live-core.js`、`live-hook.js` | 直播加速（live.bilibili.com）：屏蔽直播 P2P、直播分片多节点竞速下载、提前缓存播放列表里的分片 | 桌面版只接管客户端的点播播放窗口，不碰客户端的直播 |
 
-因此下面这些功能只在浏览器版存在，桌面版“没有移植”不是遗漏：全接管（桌面版的设置面板里“接管方式”是灰色的，固定为兼容模式），编码跟随 B 站的播放策略，“视频统计信息”里的 Player Type 和下载速度，单集循环、自动开播、连续拖进度条相关的修复，拖动进度条在当前播放会话内完成、挡住 B 站播放内核的回跳（0.9.4.0），接管期间停住 B 站内核的下载调度器、屏蔽它的残留报错（0.9.4.0），杜比 / Hi-Res 音轨的接管（0.9.4.0），接管前等 B 站把缓冲区建好、音轨跟随播放器里 Hi-Res / 杜比全景声的选择（0.9.4.3），浏览器缓冲区满（QuotaExceededError）时的处理，下载地址过期前自动换新，`/list/`、稍后再看、收藏夹页面的支持，在所有 bilibili.com 页面打开设置面板（0.9.4.0），剧集加速的开关和剧集页只用兼容模式（2026.10.8.1），全接管下前方缓冲快用完时先暂停、等画面和声音都备好再一起继续（2026.10.19.1，#48），直播加速（0.9.4.0），阻止使用国际版。它们都依赖浏览器版自己的播放内核或页面接管代码；在客户端里，对应的事情由客户端的播放器完成。
+因此下面这些功能只在浏览器版存在，桌面版“没有移植”不是遗漏：全接管（桌面版的设置面板里“接管方式”是灰色的，固定为兼容模式），编码跟随 B 站的播放策略，音频加速的开关和自动清晰度上限（2026.11.15.1，客户端里音频一直加速），单集循环、自动开播、连续拖进度条相关的修复，拖动进度条在当前播放会话内完成、挡住 B 站播放内核的回跳（0.9.4.0），接管期间停住 B 站内核的下载调度器、屏蔽它的残留报错（0.9.4.0），杜比 / Hi-Res 音轨的接管（0.9.4.0），接管前等 B 站把缓冲区建好、音轨跟随播放器里 Hi-Res / 杜比全景声的选择（0.9.4.3），浏览器缓冲区满（QuotaExceededError）时的处理，下载地址过期前自动换新，`/list/`、稍后再看、收藏夹页面的支持，在所有 bilibili.com 页面打开设置面板（0.9.4.0），剧集加速的开关和剧集页只用兼容模式（2026.10.8.1），全接管下前方缓冲快用完时先暂停、等画面和声音都备好再一起继续（2026.10.19.1，#48），直播加速（0.9.4.0），阻止使用国际版。它们都依赖浏览器版自己的播放内核或页面接管代码；在客户端里，对应的事情由客户端的播放器完成。
 
 ## 只有桌面版有的
 
 | 文件 | 作用 |
 |---|---|
-| `src/page-hook.js` | 对应浏览器版的 `page-hook.js`：挂到客户端的播放器对象（`biliPlayer`、`nano.createPlayer`）上，拿到播放地址、发现换了视频，把兼容模式装到播放器上；在客户端的 `<video>` 元素上接自动线程数的卡顿和缓冲信号；给设置面板的“运行状态”和“复制诊断信息”提供数据 |
+| `src/page-hook.js` | 对应浏览器版的 `page-hook.js`：挂到客户端的播放器对象（`biliPlayer`、`nano.createPlayer`）上，拿到播放地址、发现换了视频，把兼容模式装到播放器上；在客户端的 `<video>` 元素上接自动线程数的卡顿和缓冲信号；给设置面板的“运行状态”、“复制诊断信息”和 BTR 统计信息提供数据 |
 | `src/settings.js` | 设置的保存（`localStorage`）、多窗口同步、旧设置迁移；接管方式固定为兼容模式 |
 | `src/panel-bridge.js`、`src/player-settings.js`、`src/settings-view.js` | 把共用的设置面板和悬浮球接到桌面版的设置上：“接管方式”显示为灰色，固定为兼容模式，下面写着“桌面版仅支持兼容模式。”；隐藏客户端用不到的项（缓冲、加速范围、网页版本），加上“更新”一栏；播放器“更多播放设置”里的 CDN 和线程数（含“自动”）；客户端系统设置里的“线程撕裂者”一栏（悬浮窗开关、打开 BTR 设置、更新和卸载） |
 | `src/updates.js`、`src/update-main.cjs` | 检查更新（读 `latest.json`）、确认后安装、卸载 |
@@ -102,14 +103,14 @@ for f in shared/*.js; do [ "$(git hash-object $f)" = "$(git -C ../Bilibili-threa
 | | 浏览器版（`dev/`） | 桌面版（`test/`） |
 |---|---|---|
 | 共用下载内核 | `shared-core-test.js` 12 项、`optimization-test.js` 28 项、`auto-concurrency-test.js` 15 项 | 同样的三个文件，`shared.test.cjs`、`optimization.test.cjs`、`auto-concurrency.test.cjs` |
-| 接到播放器上的那一层 | 浏览器回归 17 个测试页（`regression-smoke-test.js`），包括缓冲区配额、地址刷新、会话内跳转和直播模块；直播和点播选轨的单元测试；油猴脚本的测试 | `browser.cjs` 19 项（真实浏览器里跑打包好的 `dist/desktop.js`，含兼容模式接上客户端播放器、番剧的地址、节点停用、自定义服务器、自动线程数的信号和复制诊断信息） |
+| 接到播放器上的那一层 | 浏览器回归 17 个测试页（`regression-smoke-test.js`），包括缓冲区配额、地址刷新、会话内跳转和直播模块；直播和点播选轨的单元测试；油猴脚本的测试 | `browser.cjs` 20 项（真实浏览器里跑打包好的 `dist/desktop.js`，含兼容模式接上客户端播放器、番剧的地址、节点停用、自定义服务器、自动线程数的信号、复制诊断信息和 BTR 统计信息） |
 | 真实 B 站媒体 | `native-mse-end-test.js`（需要 `BTR_TEST_BVID`、`BTR_TEST_CID`） | 没有，由维护者在真实客户端里测 |
 | 模拟网络基准 | `download-benchmark.js`，按浏览器版播放器取分段的方式 | 没有，客户端的请求方式不同 |
 | 安装、更新、卸载、监视程序 | 没有 | `installer`、`update-main`、`force-update`、`guard`、`progress`、`package` 各测试；维护操作默认带 `-silence` 运行，`BTR_TEST_WINDOWS=1` 时带窗口 |
 
 ## 同步共用文件时要做的事
 
-1. 把浏览器版改过的共用文件原样复制到 `shared/`，用上面的命令确认 7 个文件逐字相同；同步 `test/shared.test.cjs`、`test/optimization.test.cjs` 和 `test/auto-concurrency.test.cjs`。
+1. 把浏览器版改过的共用文件原样复制到 `shared/`，用上面的命令确认 8 个文件逐字相同；同步 `test/shared.test.cjs`、`test/optimization.test.cjs` 和 `test/auto-concurrency.test.cjs`。
 2. 对照浏览器版 `src/page-hook.js` 里建立兼容模式播放器的那段（`createNativePlayer` 的参数、`onState`、`report()` 的字段），看桌面版的 `src/page-hook.js` 要不要跟着改。诊断信息的格式由共用的 `diagnostic-report.js` 决定，`report()` 少了哪个字段，诊断信息里对应的那一项就显示 n/a。
 3. 改版本号，写 `docs/verification.md`，运行 `npm run release`、`npm test` 和 `node test/browser.cjs`。
 4. 先只装到本机，在真实客户端里测过，再提交推送。

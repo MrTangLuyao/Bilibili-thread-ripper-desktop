@@ -6,7 +6,7 @@
 
 **Bilibili 线程撕裂者的桌面版，适用于官方哔哩哔哩 Windows 客户端**
 
-当前版本 **2026.11.10.1-d1**，已在官方客户端 **1.19.0** 实测
+当前版本 **2026.11.15.1-d1**，已在官方客户端 **1.20.0** 实测
 
 [![平台](https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows-0078d4?style=flat-square)](#-安装) [![网页版](https://img.shields.io/badge/%E7%BD%91%E9%A1%B5%E7%89%88-%E6%B2%B9%E7%8C%B4%E8%84%9A%E6%9C%AC-fb7299?style=flat-square)](https://github.com/MrTangLuyao/Bilibili-thread-ripper) [![Stars](https://img.shields.io/github/stars/MrTangLuyao/Bilibili-thread-ripper-desktop?style=flat-square&color=f5b301)](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop/stargazers) [![许可证](https://img.shields.io/github/license/MrTangLuyao/Bilibili-thread-ripper-desktop?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&style=flat-square&color=3b82f6)](LICENSE)
 
@@ -68,6 +68,8 @@ irm https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop
 | 窗口右下角的 **BTR 悬浮球**（页首左图） | 和网页版一样的设置面板：CDN、线程数、复制诊断信息、悬浮球开关、更新和卸载 |
 | 客户端 **设置 → 线程撕裂者** | BTR 悬浮窗开关、打开 BTR 设置、更新和卸载。关掉悬浮窗后从这里打开 |
 | 播放器 **齿轮 → 更多播放设置**（页首右图） | CDN 和线程数 |
+
+在播放窗口里右键选 **BTR 统计信息**，或者点设置面板里的 **运行状态**，会打开 BTR 自己的统计面板：下载速度、缓冲、线程和各节点的速度。
 
 | 设置 | 默认 | 说明 |
 | --- | --- | --- |

@@ -129,12 +129,25 @@
       bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
       // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
       // Experimental, off unless switched on.
-      secondaryBuffer: source.secondaryBuffer === true
+      secondaryBuffer: source.secondaryBuffer === true,
+      // 音频加速: switched off, only the video is sped up. The full takeover then fetches the
+      // audio as one piece over one connection; the compatibility mode leaves it to Bilibili.
+      audioAcceleration: source.audioAcceleration !== false,
+      // 自动清晰度的最高档: the best quality 自动 may choose in the full takeover; 0 for no limit.
+      autoQualityMax: [32, 64, 80, 116, 120].includes(Number(source.autoQualityMax)) ? Number(source.autoQualityMax) : 0
     };
+  }
+
+  // A speed in bytes a second, as the panels write it: KB/s, MB/s from one megabyte up.
+  function formatSpeed(bps) {
+    const value = Math.max(0, Number(bps) || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
+    return `${Math.round(value / 1024)} KB/s`;
   }
 
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
+    formatSpeed,
     isBilibiliMediaUrl,
     normalizeCdnHost,
     normalizeSettings,
