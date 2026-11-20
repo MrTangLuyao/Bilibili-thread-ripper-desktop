@@ -6,6 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
+        本人最近比较忙，并且经常回国，所以收到反馈修复可能需要一段时间。同时我想为本项目找一个维护者，如果你感兴趣，可以跟我联系：louieluyaotang@gmail.com
+
         谢谢你愿意反馈！为了更快找到原因，麻烦写上下面几项。
 
   - type: input

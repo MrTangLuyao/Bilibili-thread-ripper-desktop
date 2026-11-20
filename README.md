@@ -123,3 +123,5 @@ irm https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop
 ## 开源协议
 
 项目采用 [MIT 开源协议](LICENSE)。你可以使用、复制、修改和分发，也可以用于商业项目，但必须保留原始版权声明和许可证文本。
+
+本人最近比较忙，并且经常回国，所以收到反馈修复可能需要一段时间。同时我想为本项目找一个维护者，如果你感兴趣，可以跟我联系：louieluyaotang@gmail.com
